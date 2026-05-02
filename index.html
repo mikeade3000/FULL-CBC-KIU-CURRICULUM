@@ -1703,10 +1703,22 @@ function textToHtml(text) {
 
 function parseCourseDetail(text, c) {
   if (!text) return '<p class="no-content">Content not yet generated.</p>';
-  text = filterTopicResources(text);
+  text = stripStepLabels(filterTopicResources(text));
   text = removeCourseHeading(text, c ? c.name : '');
   return textToHtml(text) || '<p class="no-content">No content available.</p>';
 }
+
+
+
+// Strip "STEP N —" / "## STEP N" labels from AI output (keep content, remove label)
+function stripStepLabels(text) {
+  if (!text) return text;
+  return text.replace(/^##\s*STEP\s+\d+\s*[-—–]\s*/gim, '## ')
+             .replace(/^##\s*STEP\s+\d+\s*$/gim, '')
+             .replace(/\*\*STEP\s+\d+\s*[-—–][^*]*\*\*/gi, '')
+             .replace(/^STEP\s+\d+\s*[-—–]\s*/gim, '');
+}
+
 
 
 function filterTopicResources(text) {
@@ -1738,26 +1750,105 @@ function textToWordXML(rawText) {
   var parts = [];
   var inBullet = false, inNumber = false, inLetter = false;
   var bulletId = null, numberId = null, letterId = null;
-  var inTable = false, tableRows = [];
+  var inTable = false, tableRows = [], tableContext = '';
+
+  function flushTable() {
+    if (!inTable || !tableRows.length) { inTable=false; tableRows=[]; tableContext=''; return; }
+    // Filter separator rows
+    var dataRows = tableRows.filter(function(r){ return !/^[\s|:\-]+$/.test(r.replace(/\|/g,'')); });
+    if (!dataRows.length) { inTable=false; tableRows=[]; tableContext=''; return; }
+
+    // Parse header to detect columns and skip Activity Rationale
+    var hdrCells = dataRows[0].split('|').map(function(c){ return c.trim(); }).filter(function(c){ return c !== ''; });
+    var skipCols = {};
+    hdrCells.forEach(function(h,i){ if (/activity rationale/i.test(h)) skipCols[i] = true; });
+
+    // Detect if this is the Step 8 "Topic-by-Topic" table (wide — needs landscape + small font)
+    var isTopicTable = /week|topic.*subtopic/i.test(hdrCells[0]+' '+(hdrCells[1]||''));
+    var isStrategyTable = /strategy/i.test(hdrCells[0]);
+
+    // Column widths
+    var visColCount = hdrCells.filter(function(_,i){ return !skipCols[i]; }).length;
+    var CW = isTopicTable ? 15100 : 9166; // landscape content width for topic table
+    var colW = visColCount > 0 ? Math.floor(CW / visColCount) : 800;
+    var colWidths = hdrCells.map(function(_,i){ return skipCols[i] ? 0 : colW; }).filter(function(w){ return w > 0; });
+
+    // Font size: small for wide tables
+    var cellSz = isTopicTable ? 14 : (isStrategyTable ? 18 : 18);
+    var NAVY = '0F2D4A', WHITE = 'FFFFFF';
+
+    var rows = '';
+    dataRows.forEach(function(row, ri) {
+      var cells = row.split('|').map(function(c){ return c.trim(); }).filter(function(c){ return c !== ''; });
+      var rowCells = '';
+      var visCi = 0;
+      cells.forEach(function(cell, ci) {
+        if (skipCols[ci]) return;
+        var fill = ri === 0 ? NAVY : (ri%2===0?'F8F8F8':'FFFFFF');
+        var bc   = ri === 0 ? NAVY : 'CCCCCC';
+        var opts = {w: colW, fill: fill, bc: bc, sz: cellSz,
+                    bold: ri===0, color: ri===0 ? WHITE : undefined, align: ri===0 ? 'center' : 'left'};
+        rowCells += mkCell(stripMd(cell), opts);
+        visCi++;
+      });
+      if (rowCells) rows += mkRow(rowCells, {header: ri===0});
+    });
+
+    if (isTopicTable) {
+      // Wrap in a landscape section for the Topic-by-Topic table
+      parts.push(
+        '<w:p><w:pPr><w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr></w:pPr></w:p>'
+      );
+      parts.push(mkTable(rows, CW, colWidths));
+      // Return to portrait after
+      parts.push(
+        '<w:p><w:pPr><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="1008" w:bottom="1080" w:left="1008"/></w:sectPr></w:pPr></w:p>'
+      );
+    } else {
+      parts.push(mkTable(rows, CW, colWidths));
+    }
+    parts.push(sp(1));
+    inTable=false; tableRows=[]; tableContext='';
+  }
+
   lines.forEach(function(line) {
     var t = line.trim();
+
+    // Pipe table detection
+    if (t.charAt(0) === '|') {
+      if (!inTable) { inTable=true; tableRows=[]; }
+      tableRows.push(t);
+      inBullet=false; inNumber=false; inLetter=false;
+      bulletId=null; numberId=null; letterId=null;
+      return;
+    }
+    if (inTable) { flushTable(); }
+
     if (!t) {
-      // blank line resets list state so next list restarts at 1
       inBullet=false; inNumber=false; inLetter=false;
       bulletId=null; numberId=null; letterId=null;
       parts.push(sp(1)); return;
     }
     if (t === '---' || t === '----') return;
+
+    // Detect "Topic-by-Topic Content Plan" heading — set context for next table
+    if (/topic.by.topic content plan/i.test(t)) { tableContext = 'topic'; }
+
     if (t.slice(0,3) === '## ') {
       inBullet=false;inNumber=false;inLetter=false;bulletId=null;numberId=null;letterId=null;
       parts.push(h2(t.slice(3))); return;
     }
+    if (t.slice(0,5) === '##### ') { parts.push(mkPara(t.slice(5),{bold:true,sz:20,color:'444444',before:60,after:20})); return; }
     if (t.slice(0,5) === '#### ') { parts.push(mkPara(t.slice(5),{bold:true,sz:21,color:'0F2D4A',before:100,after:40})); return; }
     if (t.slice(0,4) === '### ') {
       inBullet=false;inNumber=false;inLetter=false;bulletId=null;numberId=null;letterId=null;
       parts.push(h3(t.slice(4))); return;
     }
-    // Bold heading **text** (must be only ** content on the line)
+    if (t.slice(0,2) === '# ') {
+      inBullet=false;inNumber=false;inLetter=false;bulletId=null;numberId=null;letterId=null;
+      parts.push(h2(t.slice(2))); return;
+    }
+    // Bold heading **text**
     if (t.slice(0,2) === '**' && t.slice(-2) === '**' && t.indexOf('**', 2) === t.length - 2) {
       inBullet=false;inNumber=false;inLetter=false;bulletId=null;numberId=null;letterId=null;
       parts.push(mkPara(t.slice(2,-2), {bold:true, color:'0F2D4A', before:100, after:40})); return;
@@ -1774,7 +1865,6 @@ function textToWordXML(rawText) {
       if (!inBullet) { bulletId = newNumId('0'); inBullet=true; inNumber=false; inLetter=false; }
       parts.push(mkPara(t.slice(2), {numId:bulletId, ilvl:'0', before:0, after:60})); return;
     }
-    // Star bullet
     if (t[0] === '*' && t.length > 1 && t[1] === ' ') {
       if (!inBullet) { bulletId = newNumId('0'); inBullet=true; inNumber=false; inLetter=false; }
       parts.push(mkPara(t.slice(2), {numId:bulletId, ilvl:'0', before:0, after:60})); return;
@@ -1793,49 +1883,10 @@ function textToWordXML(rawText) {
     inBullet=false; inNumber=false; inLetter=false; bulletId=null; numberId=null; letterId=null;
     parts.push(mkPara(t, {align:'both', before:0, after:80}));
   });
+  flushTable();
   return parts.join('');
 }
 
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  WORD DOCUMENT ENGINE — mirrors Full Preview exactly, Times New Roman
-// ══════════════════════════════════════════════════════════════════════════════
-
-// ── Build cover page ──────────────────────────────────────────────────────────
-async function saveDocx(xmlParts, filename, successMsg) {
-  if (typeof JSZip === 'undefined') { toast('JSZip not loaded — please reload','error'); return; }
-  var zip = new JSZip();
-  zip.file('[Content_Types].xml', xmlParts.contentTypes);
-  zip.folder('_rels').file('.rels', xmlParts.rels);
-  var word = zip.folder('word');
-  word.file('document.xml',  xmlParts.document);
-  word.file('styles.xml',    xmlParts.styles);
-  word.file('numbering.xml', xmlParts.numbering);
-  word.file('settings.xml',  xmlParts.settings);
-  word.file('fontTable.xml', xmlParts.fontTable);
-  word.folder('_rels').file('document.xml.rels', xmlParts.documentRels);
-  var docProps = zip.folder('docProps');
-  docProps.file('core.xml', xmlParts.core);
-  docProps.file('app.xml',  xmlParts.app);
-  var blob = await zip.generateAsync({
-    type: 'blob',
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    compression: 'DEFLATE',
-    compressionOptions: {level: 6}
-  });
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement('a');
-  a.href = url; a.download = filename || 'document.docx';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  setTimeout(function(){ URL.revokeObjectURL(url); }, 5000);
-  toast(successMsg || 'Downloaded!', 'success');
-}
-
-
-// ══════════════════════════════════════════
-//  WORD XML UTILITY FUNCTIONS
-// ══════════════════════════════════════════
 
 function mkPara(text, opts) {
   opts = opts || {};
@@ -1946,6 +1997,41 @@ function buildDocxParts(p, bodyXML) {
 // Registry vars for list numbering restart
 var _docNumRegistry = [];
 var _docNumCounter  = 10;
+
+
+async function saveDocx(xmlParts, filename, successMsg) {
+  if (typeof JSZip === 'undefined') { toast('JSZip not loaded — please reload the page', 'error'); return; }
+  try {
+    var zip = new JSZip();
+    zip.file('[Content_Types].xml', xmlParts.contentTypes);
+    zip.folder('_rels').file('.rels', xmlParts.rels);
+    var word = zip.folder('word');
+    word.file('document.xml',  xmlParts.document);
+    word.file('styles.xml',    xmlParts.styles);
+    word.file('numbering.xml', xmlParts.numbering);
+    word.file('settings.xml',  xmlParts.settings);
+    word.file('fontTable.xml', xmlParts.fontTable);
+    word.folder('_rels').file('document.xml.rels', xmlParts.documentRels);
+    var docProps = zip.folder('docProps');
+    docProps.file('core.xml', xmlParts.core);
+    docProps.file('app.xml',  xmlParts.app);
+    var blob = await zip.generateAsync({
+      type: 'blob',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      compression: 'DEFLATE', compressionOptions: {level: 6}
+    });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename || 'KIU_Programme.docx';
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 5000);
+    toast(successMsg || '\u2705 Downloaded!', 'success');
+  } catch(e) {
+    console.error('saveDocx error:', e);
+    toast('\u274c Download failed: ' + e.message, 'error');
+  }
+}
 
 
 function buildCoverPage(p) {
@@ -2073,7 +2159,7 @@ function buildCourseDetailXML(c, detailText) {
 
   // Content — same filtering as preview
   if (detailText) {
-    var filtered = filterTopicResources(removeCourseHeading(detailText, c.name));
+    var filtered = filterTopicResources(stripStepLabels(removeCourseHeading(detailText, c.name)));
     out += textToWordXML(filtered);
   } else {
     out += mkPara('[Course content not yet generated — use AI Generator tab.]', {italic:true, color:'888888', before:0, after:80});
@@ -2759,26 +2845,26 @@ function courseDetailPrompt(c) {
     + 'NH: ' + nh + ' (DH:' + dh + ' SH:' + sh + ' AH:' + ah + ' OH:' + oh + ') | Credits: ' + crLabel + '\n'
     + 'Teaching weeks: ' + weeks + ' | Per-week avg: A=' + wksDir + 'h B=' + wksSelf + 'h C=' + wksApp + 'h D=' + wksAss + 'h\n\n'
     + '=== GENERATE ALL 15 STEPS IN FULL ===\n\n'
-    + '## STEP 1 - Course Justification and Aims\n'
+    + '## Course Justification and Aims\n'
     + '**Course Justification** (2 paragraphs: relevance to ' + prog + ', gap filled, Uganda/East Africa industry relevance)\n'
     + '**Course Aims** (4 aims beginning "Upon completing this course, students will...")\n'
     + '**Course Description** (120-150 words: scope, CBE approach, industry links)\n\n'
-    + '## STEP 2 - Cognitive Domain Outcomes\n'
+    + '## Cognitive Domain Outcomes\n'
     + '**Cognitive Learning Outcomes** (5-6 outcomes spanning all Bloom levels)\n'
     + '**Bloom Verbs Used** | **Bloom Levels Addressed** | **Assessment Linkage**\n\n'
-    + '## STEP 3 - Affective Domain Outcomes\n'
+    + '## Affective Domain Outcomes\n'
     + '**Affective Learning Outcomes** (4 outcomes) | **Values and Dispositions** (5 values)\n'
     + '**Strategies** | **Evidence and Measurement**\n\n'
-    + '## STEP 4 - Psychomotor Domain Outcomes\n'
+    + '## Psychomotor Domain Outcomes\n'
     + '**Psychomotor Outcomes** (4 hands-on outcomes) | **Practical Activities**\n'
     + '**Practical Assessment** | **Equipment and Materials**\n\n'
-    + '## STEP 5 - Competency Gap Analysis\n'
+    + '## Competency Gap Analysis\n'
     + '**Current State** | **Desired State** | **Identified Gaps** | **Priority Level**\n\n'
-    + '## STEP 6 - Map Knowledge and Skills to Competencies\n'
+    + '## Knowledge, Skills and Competency Mapping\n'
     + '**Core Competencies** (4-5 numbered) | **Knowledge Areas** | **Skills** (4-5) | **Mapping Notes**\n\n'
-    + '## STEP 7 - SMART Learning Objectives\n'
+    + '## SMART Learning Objectives\n'
     + 'Write 6 SMART objectives: "Learners will be able to [verb] [outcome] by end of Week [N]."\n\n'
-    + '## STEP 8 - Plan Course Content, Notional Hours and Engagement Activities\n\n'
+    + '## Course Content, Notional Hours and Engagement Activities\n\n'
     + '**Course Content Overview** (100 words)\n\n'
     + '**Topic-by-Topic Content Plan** - Generate ALL ' + weeks + ' weeks with this exact table:\n\n'
     + '| Week | Topic/Subtopic | Key Content | Bloom Level | A hrs Directed | B hrs Self-dir | C hrs Applied | D hrs Assessed | Total h | Teaching Method | Learner Activity | Activity Rationale | Assessment Type | Resources Required | Performance Indicator | Competency Link |\n'
@@ -2790,22 +2876,22 @@ function courseDetailPrompt(c) {
     + ''
     + 'TOTALS row: | **TOTALS** | | | | **' + dh + '** | **' + sh + '** | **' + ah + '** | **' + oh + '** | **' + nh + '** | CBE Blend C+D=[calculate]% |\n\n'
     + '**Rationale for Sequencing** (2 paragraphs) | **CBE Blend Verification** (C+D must be >=50%)\n\n'
-    + '## STEP 9 - Evidence-based Assessments\n'
+    + '## Evidence-based Assessments\n'
     + '**Formative Assessments (50%)** (list 4 specific assessments with timing, weight and purpose)\n'
     + '**Rubric** (4 competencies x 4 levels: Excellent/Proficient/Developing/Beginning)\n'
     + '**Evidence Types** | **Mastery Criteria** | **Competency-Assessment Matrix**\n\n'
-    + '## STEP 10 - Delivery Methods\n'
+    + '## Delivery Methods\n'
     + '**Modality** | **Tools** (Moodle, Zoom, Google Workspace) | **Formats** | **Accessibility**\n\n'
-    + '## STEP 11 - Engaging Learning Activities\n'
+    + '## Engaging Learning Activities\n'
     + '**Core Activities** (5 named activities) | **Collaborative Elements** | **Gamification** | **Real-world Scenarios** (Uganda/East Africa)\n\n'
-    + '## STEP 12 - Flexible Learning Paths\n'
+    + '## Flexible Learning Paths\n'
     + '**Prerequisites** | **Within-Course Progression** | **Self-paced Mechanism** | **Adaptations** | **RPL Provision**\n\n'
-    + '## STEP 13 - Instructional Strategies and Resource Materials\n'
+    + '## Instructional Strategies and Resource Materials\n'
     + '**Strategy-Purpose-Resource Matrix** (5 rows: Strategy | Purpose | Resource)\n'
     + '**Resource Materials** | **Design Notes** | **Localised References (APA 7th, 2018-2025)** (6 refs, some East African)\n\n'
-    + '## STEP 14 - Continuous Feedback\n'
+    + '## Continuous Feedback and Improvement\n'
     + '**Mechanisms** (4) | **Schedule** (with turnaround days) | **Improvement Process** | **Success Metrics**\n\n'
-    + '## STEP 15 - Assessment Weights and Credit Structure\n'
+    + '## Assessment Weights and Credit Structure\n'
     + '**Assessment Weight Distribution:**\n'
     + '- Formative Assessments: 50% (quizzes, assignments, practicals, presentations)\n'
     + '- Summative Assessments: 50% (mid-semester test, end-of-semester examination)\n\n'

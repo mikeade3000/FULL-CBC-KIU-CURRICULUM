@@ -751,7 +751,7 @@ body { user-select: none; -webkit-user-select: none; }
         </div>
       </div>
       <div id="wrc-units-badges" style="display:flex;flex-wrap:wrap;gap:5px;"></div>
-      <div style="margin-top:8px;color:var(--gray-500);">Assessment: Continuous/Formative 60% (Activities 40% + Quizzes 20%) · Summative 40% (End-of-unit exam) · Attendance: min 85% · Pass mark: 50%</div>
+      <div style="margin-top:8px;color:var(--gray-500);">Assessment: Formative 50% (Activities 30% + Quizzes 20%) · Summative 50% (End-of-unit exam) · Attendance: min 85% · Pass mark: 50%</div>
     </div>
   </div>
 
@@ -985,7 +985,7 @@ function mkRuns(text, opts) {
     var color = opts.color ? '<w:color w:val="' + xe(opts.color) + '"/>' : '';
     var b = (p.bold || opts.bold) ? '<w:b/><w:bCs/>' : '';
     var it = (p.italic || opts.italic) ? '<w:i/><w:iCs/>' : '';
-    var font = '<w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>';
+    var font = '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>';
     return '<w:r><w:rPr>' + font + '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>' + color + b + it + '</w:rPr><w:t xml:space="preserve">' + xe(p.text) + '</w:t></w:r>';
   }).join('');
 }
@@ -1612,58 +1612,102 @@ function textToHtml(text) {
   if (!text) return '';
   var lines = text.split('\n');
   var html = '';
-  var inList = false, inOL = false;
+  var inList = false, inOL = false, inTable = false, tableRows = [];
+
   var flushLists = function() {
-    if (inList) { html += '</ul>'; inList = false; }
-    if (inOL) { html += '</ol>'; inOL = false; }
+    if (inList)  { html += '</ul>'; inList  = false; }
+    if (inOL)    { html += '</ol>'; inOL    = false; }
   };
+
+  var flushTable = function() {
+    if (!inTable || !tableRows.length) { inTable=false; tableRows=[]; return; }
+    // Filter out separator rows (|----|)
+    var dataRows = tableRows.filter(function(r){ return !/^[\s|:\-]+$/.test(r.replace(/\|/g,'')); });
+    if (!dataRows.length) { inTable=false; tableRows=[]; return; }
+    var t = '<div style="overflow-x:auto;margin:10px 0"><table class="ctable" style="width:100%;font-size:11.5px;border-collapse:collapse">';
+    dataRows.forEach(function(row, i) {
+      var cells = row.split('|').map(function(c){return c.trim();}).filter(function(c){return c!=='';});
+      if (!cells.length) return;
+      t += '<tr>';
+      cells.forEach(function(cell) {
+        var tag = i===0?'th':'td';
+        var style = i===0
+          ? 'background:#0F2D4A;color:white;padding:6px 8px;font-weight:700;font-size:11px;text-align:left;border:1px solid #0F2D4A'
+          : 'padding:5px 8px;border:1px solid #ddd;vertical-align:top;line-height:1.4';
+        t += '<' + tag + ' style="' + style + '">' + mdLine(cell) + '</' + tag + '>';
+      });
+      t += '</tr>';
+    });
+    t += '</table></div>';
+    html += t;
+    inTable = false; tableRows = [];
+  };
+
   lines.forEach(function(line) {
     var t = line.trim();
+
+    // Table detection
+    if (t.startsWith('|')) {
+      flushLists();
+      inTable = true;
+      tableRows.push(t);
+      return;
+    }
+    if (inTable && !t.startsWith('|')) { flushTable(); }
+
     if (!t) { flushLists(); return; }
-    if (t === '---' || t === '----' || t === '-----') return;
+    if (t === '---' || t === '----' || t === '-----') { flushLists(); html += '<hr style="border:none;border-top:1px solid #eee;margin:8px 0">'; return; }
+
+    // Headings (all levels)
+    if (t.slice(0,5) === '##### ') { flushLists(); html += '<p style="font-weight:700;font-size:11px;color:var(--navy);margin:6px 0 2px">' + mdLine(t.slice(5)) + '</p>'; return; }
+    if (t.slice(0,5) === '#### ') { flushLists(); html += '<p style="font-weight:700;font-size:12px;color:var(--navy);margin:10px 0 3px;padding:3px 8px;background:#f0f4f8;border-left:3px solid var(--teal)">' + mdLine(t.slice(5)) + '</p>'; return; }
+    if (t.slice(0,4) === '### ') { flushLists(); html += '<h4 class="sub-title" style="font-size:13px">' + mdLine(t.slice(4)) + '</h4>'; return; }
     if (t.slice(0,3) === '## ') { flushLists(); html += '<h4 class="sub-title">' + mdLine(t.slice(3)) + '</h4>'; return; }
-    if (t.slice(0,4) === '### ') { flushLists(); html += '<h4 class="sub-title" style="font-size:12px">' + mdLine(t.slice(4)) + '</h4>'; return; }
+    if (t.slice(0,2) === '# ')  { flushLists(); html += '<h4 class="sub-title" style="font-size:15px">' + mdLine(t.slice(2)) + '</h4>'; return; }
+
     // Numbered list
     var j = 0;
     while (j < t.length && t[j] >= '0' && t[j] <= '9') j++;
-    if (j > 0 && j < t.length && t[j] === '.' && t[j+1] === ' ') {
+    if (j > 0 && j < t.length && t[j] === '.' && t.length > j+1 && t[j+1] === ' ') {
       if (inList) { html += '</ul>'; inList = false; }
-      if (!inOL) { html += '<ol style="margin:4px 0 8px 18px;">'; inOL = true; }
-      html += '<li>' + mdLine(t.slice(j+2)) + '</li>'; return;
+      if (!inOL) { html += '<ol style="margin:4px 0 8px 20px">'; inOL = true; }
+      html += '<li style="margin-bottom:3px">' + mdLine(t.slice(j+2)) + '</li>'; return;
     }
-    // Bullet -  or •
+    // Bullet - or •
     if ((t[0] === '-' || t[0] === '\u2022') && t.length > 1 && t[1] === ' ') {
       if (inOL) { html += '</ol>'; inOL = false; }
-      if (!inList) { html += '<ul style="margin:4px 0 8px 18px;">'; inList = true; }
-      html += '<li>' + mdLine(t.slice(2)) + '</li>'; return;
+      if (!inList) { html += '<ul style="margin:4px 0 8px 20px">'; inList = true; }
+      html += '<li style="margin-bottom:3px">' + mdLine(t.slice(2)) + '</li>'; return;
     }
     // Star bullet
     if (t[0] === '*' && t.length > 1 && t[1] === ' ') {
       if (inOL) { html += '</ol>'; inOL = false; }
-      if (!inList) { html += '<ul style="margin:4px 0 8px 18px;">'; inList = true; }
-      html += '<li>' + mdLine(t.slice(2)) + '</li>'; return;
+      if (!inList) { html += '<ul style="margin:4px 0 8px 20px">'; inList = true; }
+      html += '<li style="margin-bottom:3px">' + mdLine(t.slice(2)) + '</li>'; return;
     }
     // Sub-bullet o
     if (t[0] === 'o' && t.length > 1 && t[1] === ' ') {
-      if (!inList) { html += '<ul style="margin:2px 0 4px 32px;list-style-type:circle;">'; inList = true; }
-      html += '<li>' + mdLine(t.slice(2)) + '</li>'; return;
+      if (!inList) { html += '<ul style="margin:2px 0 4px 36px;list-style-type:circle">'; inList = true; }
+      html += '<li style="margin-bottom:2px">' + mdLine(t.slice(2)) + '</li>'; return;
     }
     // Lettered a) b)
     if (t.length > 2 && t[1] === ')' && t[2] === ' ' && t[0] >= 'a' && t[0] <= 'z') {
-      if (!inList) { html += '<ul style="margin:4px 0 8px 18px;">'; inList = true; }
+      if (!inList) { html += '<ul style="margin:4px 0 8px 20px">'; inList = true; }
       html += '<li><strong>' + t[0].toUpperCase() + ')</strong> ' + mdLine(t.slice(3)) + '</li>'; return;
     }
-    // Bold heading line: **text** or **text:**
+    // Bold heading **text**
     if (t.slice(0,2) === '**' && t.indexOf('**', 2) !== -1) {
       flushLists();
-      html += '<p style="font-weight:700;color:var(--navy);margin:8px 0 3px">' + mdLine(t) + '</p>'; return;
+      html += '<p style="font-weight:700;color:var(--navy);margin:10px 0 3px">' + mdLine(t) + '</p>'; return;
     }
     flushLists();
-    html += '<p style="margin:4px 0;text-align:justify">' + mdLine(t) + '</p>';
+    html += '<p style="margin:4px 0;text-align:justify;line-height:1.55">' + mdLine(t) + '</p>';
   });
   flushLists();
+  flushTable();
   return html;
 }
+
 
 function parseCourseDetail(text, c) {
   if (!text) return '<p class="no-content">Content not yet generated.</p>';
@@ -2192,6 +2236,7 @@ function textToWordXML(rawText) {
       inBullet=false;inNumber=false;inLetter=false;bulletId=null;numberId=null;letterId=null;
       parts.push(h2(t.slice(3))); return;
     }
+    if (t.slice(0,5) === '#### ') { parts.push(mkPara(t.slice(5),{bold:true,sz:21,color:'0F2D4A',before:100,after:40})); return; }
     if (t.slice(0,4) === '### ') {
       inBullet=false;inNumber=false;inLetter=false;bulletId=null;numberId=null;letterId=null;
       parts.push(h3(t.slice(4))); return;
@@ -2334,7 +2379,7 @@ function buildDocxParts(p,bodyXML){
   const rels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
   const documentRels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`;
   const document=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14"><w:body>${bodyXML}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="1008" w:bottom="1080" w:left="1008"/></w:sectPr></w:body></w:document>`;
-  const styles=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="en-GB"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="100"/><w:jc w:val="both"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style><w:style w:type="paragraph" w:styleId="KH1"><w:name w:val="KIU Heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="280" w:after="100"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:b/><w:bCs/><w:sz w:val="28"/><w:szCs w:val="28"/><w:color w:val="0F2D4A"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="KH2"><w:name w:val="KIU Heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="80"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:b/><w:bCs/><w:sz w:val="24"/><w:szCs w:val="24"/><w:color w:val="117A7A"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="KH3"><w:name w:val="KIU Heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="160" w:after="60"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:b/><w:bCs/><w:sz w:val="22"/><w:szCs w:val="22"/><w:color w:val="333333"/></w:rPr></w:style><w:style w:type="character" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/></w:style></w:styles>`;
+  const styles=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="en-GB"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="80" w:line="276" w:lineRule="auto"/><w:jc w:val="both"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style><w:style w:type="paragraph" w:styleId="KH1"><w:name w:val="KIU Heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="280" w:after="100"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:b/><w:bCs/><w:sz w:val="28"/><w:szCs w:val="28"/><w:color w:val="0F2D4A"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="KH2"><w:name w:val="KIU Heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="80"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:b/><w:bCs/><w:sz w:val="24"/><w:szCs w:val="24"/><w:color w:val="117A7A"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="KH3"><w:name w:val="KIU Heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="160" w:after="60"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:b/><w:bCs/><w:sz w:val="22"/><w:szCs w:val="22"/><w:color w:val="333333"/></w:rPr></w:style><w:style w:type="character" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/></w:style></w:styles>`;
   // Dynamic numbering: generate unique numIds for each list instance to force restart
   var numXmlInstances = '';
   var numIdCounter = 10; // start from 10, leaving 1-9 for static use
@@ -2345,7 +2390,7 @@ function buildDocxParts(p,bodyXML){
   }
   const numbering=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#x2022;"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#x25E6;"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="1080" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="2"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1)"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num>${numXmlInstances}</w:numbering>`;
   const settings=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`;
-  const fontTable=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:font w:name="Arial"><w:panose1 w:val="020B0604020202020204"/><w:charset w:val="00"/><w:family w:val="Swiss"/><w:pitch w:val="variable"/></w:font></w:fonts>`;
+  const fontTable=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:font w:name="Times New Roman"><w:panose1 w:val="02020603050405020304"/><w:charset w:val="00"/><w:family w:val="Roman"/><w:pitch w:val="variable"/></w:font></w:fonts>`;
   const core=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xe(stripMd(p.name||''))}</dc:title><dc:creator>KIU CBE Programme Generator</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`;
   const app=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>KIU CBE Programme Generator</Application></Properties>`;
   return{contentTypes,rels,documentRels,document,styles,numbering,settings,fontTable,core,app};
@@ -3130,11 +3175,15 @@ function courseDetailPrompt(c) {
     + '**Topic-by-Topic Content Plan** - Generate ALL ' + weeks + ' weeks with this exact table:\n\n'
     + '| Week | Topic/Subtopic | Key Content | Bloom Level | A hrs Directed | B hrs Self-dir | C hrs Applied | D hrs Assessed | Total h | Teaching Method | Learner Activity | Activity Rationale | Assessment Type | Resources Required | Performance Indicator | Competency Link |\n'
     + '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\n'
-    + 'Rules: A avg=' + wksDir + 'h, B avg=' + wksSelf + 'h, C avg=' + wksApp + 'h, D avg=' + wksAss + 'h per week\n'
+    + 'Table rules:\n'
+    + '- Week: e.g. Week 1, Week 2 (bold)\n'
+    + '- A avg=' + wksDir + 'h/wk, B avg=' + wksSelf + 'h/wk, C avg=' + wksApp + 'h/wk, D avg=' + wksAss + 'h/wk\n'
+    + '- Use exact numbers, no ranges. Every cell must be filled.\n'
+    + '- Activity Rationale: cite a learning theory (Bloom, Kolb, Vygotsky, Biggs)\n'
     + 'TOTALS row: | **TOTALS** | | | | **' + dh + '** | **' + sh + '** | **' + ah + '** | **' + oh + '** | **' + nh + '** | CBE Blend C+D=[calculate]% |\n\n'
     + '**Rationale for Sequencing** (2 paragraphs) | **CBE Blend Verification** (C+D must be >=50%)\n\n'
     + '## STEP 9 - Evidence-based Assessments\n'
-    + '**Formative** (4 specific) | **Summative** (Coursework 60% + Exam 40%)\n'
+    + '**Formative Assessments (50%)** (list 4 specific assessments with timing, weight and purpose)\n'
     + '**Rubric** (4 competencies x 4 levels: Excellent/Proficient/Developing/Beginning)\n'
     + '**Evidence Types** | **Mastery Criteria** | **Competency-Assessment Matrix**\n\n'
     + '## STEP 10 - Delivery Methods\n'
@@ -3149,7 +3198,9 @@ function courseDetailPrompt(c) {
     + '## STEP 14 - Continuous Feedback\n'
     + '**Mechanisms** (4) | **Schedule** (with turnaround days) | **Improvement Process** | **Success Metrics**\n\n'
     + '## STEP 15 - Assessment Weights and Credit Structure\n'
-    + '**Coursework: 60% | Exam: 40%**\n'
+    + '**Assessment Weight Distribution:**\n'
+    + '- Formative Assessments: 50% (quizzes, assignments, practicals, presentations)\n'
+    + '- Summative Assessments: 50% (mid-semester test, end-of-semester examination)\n\n'
     + '**Competence-Assessment Matrix** | **KIU Grading Scale** (A=80-100, B+=75-79, B=70-74, C+=65-69, C=60-64, D+=55-59, F<55)\n'
     + '**Authentic Assessments** (3 tasks) | **Reading List (APA 7th, 8-10 refs, 2018-2025)**';
 }

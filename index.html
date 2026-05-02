@@ -1231,7 +1231,7 @@ function getProg() {
   };
 }
 
-function getApiKey() { return ({value:""})?.value?.trim() || ''; }
+function getApiKey() { return "backend"; }  // API key stored securely on Render server
 function getProvider() { return ({value:"openrouter"})?.value || 'openrouter'; }
 
 function getNH(c) { return (parseInt(c.DH)||0)+(parseInt(c.SH)||0)+(parseInt(c.AH)||0)+(parseInt(c.OH)||0); }
@@ -1323,17 +1323,7 @@ function switchTab(name) {
 function updateProvider() { updateApiStatus(); }
 
 function updateApiStatus() {
-  const key = getApiKey();
-  const el = document.getElementById('api-status');
-  if (key.length > 8) {
-    el.textContent = ` (${getProvider().toUpperCase()})`;
-    el.style.borderColor = 'var(--teal2)';
-    el.style.color = 'var(--teal2)';
-  } else {
-    el.textContent = '';
-    el.style.borderColor = '';
-    el.style.color = '';
-  }
+  // API key is stored securely on the Render backend - no frontend key needed
 }
 
 // ── Backend API endpoint (Render) ────────────────────────────────────────────
@@ -1430,7 +1420,7 @@ async function generateCourseDetail(courseId) {
 }
 
 async function generateAll() {
-  if (!getApiKey()) { toast('Please set your API key in the Setup tab','error'); return; }
+  // API key handled by backend
   isGeneratingAll = true;
   const btn = document.getElementById('gen-all-btn');
   const spin = document.getElementById('gen-all-spin');
@@ -1451,7 +1441,7 @@ async function generateAll() {
 }
 
 async function generateAllCourses() {
-  if (!getApiKey()) { toast('Please set your API key in the Setup tab','error'); return; }
+  // API key handled by backend
   isGeneratingAll = true;
   const btn = document.querySelector('[onclick="generateAllCourses()"]');
   const spin = document.getElementById('gen-courses-spin');
@@ -1767,7 +1757,7 @@ function clearImport() {
 async function extractAndFill() {
   const rawText = document.getElementById('import-text').value.trim();
   if (!rawText) { toast('Please upload a file or paste programme text first', 'error'); return; }
-  if (!getApiKey()) { toast('Please set your API key first', 'error'); return; }
+  // API key handled by backend
 
   const btn = document.getElementById('extract-btn');
   const spin = document.getElementById('extract-spin');

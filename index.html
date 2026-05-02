@@ -1621,15 +1621,23 @@ function textToHtml(text) {
 
   var flushTable = function() {
     if (!inTable || !tableRows.length) { inTable=false; tableRows=[]; return; }
-    // Filter out separator rows (|----|)
     var dataRows = tableRows.filter(function(r){ return !/^[\s|:\-]+$/.test(r.replace(/\|/g,'')); });
     if (!dataRows.length) { inTable=false; tableRows=[]; return; }
+
+    // Find header to detect Activity Rationale column index
+    var headerCells = dataRows[0].split('|').map(function(c){return c.trim();}).filter(function(c){return c!=='';});
+    var skipCols = {};
+    headerCells.forEach(function(h,i){
+      if (/activity rationale/i.test(h)) skipCols[i] = true;
+    });
+
     var t = '<div style="overflow-x:auto;margin:10px 0"><table class="ctable" style="width:100%;font-size:11.5px;border-collapse:collapse">';
     dataRows.forEach(function(row, i) {
       var cells = row.split('|').map(function(c){return c.trim();}).filter(function(c){return c!=='';});
       if (!cells.length) return;
       t += '<tr>';
-      cells.forEach(function(cell) {
+      cells.forEach(function(cell, ci) {
+        if (skipCols[ci]) return; // skip Activity Rationale column
         var tag = i===0?'th':'td';
         var style = i===0
           ? 'background:#0F2D4A;color:white;padding:6px 8px;font-weight:700;font-size:11px;text-align:left;border:1px solid #0F2D4A'
@@ -1712,486 +1720,9 @@ function textToHtml(text) {
 function parseCourseDetail(text, c) {
   if (!text) return '<p class="no-content">Content not yet generated.</p>';
   text = filterTopicResources(text);
+  text = removeCourseHeading(text, c ? c.name : '');
   return textToHtml(text) || '<p class="no-content">No content available.</p>';
 }
-
-
-
-function copyDocText() {
-  const wrap = document.getElementById('preview-wrap');
-  const text = wrap.innerText;
-  navigator.clipboard.writeText(text).then(()=>toast('Document text copied to clipboard','success'))
-    .catch(()=>toast('Use Ctrl+A, Ctrl+C in the preview area','error'));
-}
-
-// ══════════════════════════════════════════
-//  INITIALIZATION
-// ══════════════════════════════════════════
-
-
-// ══════════════════════════════════════════
-//  IMPORT & EXTRACTION FUNCTIONS
-// ══════════════════════════════════════════
-
-let importText = '';
-
-function toggleImport() {
-  const body = document.getElementById('import-body');
-  const icon = document.getElementById('import-toggle-icon');
-  const open = body.style.display !== 'none';
-  body.style.display = open ? 'none' : 'block';
-  icon.textContent = open ? '▶ Click to expand' : '▼ Collapse';
-}
-
-function handleDrop(event) {
-  event.preventDefault();
-  document.getElementById('drop-zone').style.background = 'var(--gray-50)';
-  const file = event.dataTransfer.files[0];
-  if (file) processFile(file);
-}
-
-function handleFileUpload(input) {
-  const file = input.files[0];
-  if (file) processFile(file);
-}
-
-async function processFile(file) {
-  const infoEl = document.getElementById('import-file-info');
-  const nameEl = document.getElementById('import-file-name');
-  const errEl  = document.getElementById('extract-error');
-  errEl.style.display = 'none';
-  const name = file.name;
-  const ext = name.split('.').pop().toLowerCase();
-  try {
-    if (ext === 'docx' || ext === 'doc') {
-      if (typeof mammoth === 'undefined') throw new Error('Mammoth.js not loaded. Please paste the text manually.');
-      const buf = await file.arrayBuffer();
-      const result = await mammoth.extractRawText({ arrayBuffer: buf });
-      importText = result.value;
-      document.getElementById('import-text').value = importText;
-      infoEl.style.display = 'flex';
-      nameEl.innerHTML = '📄 Loaded: <strong>' + name + '</strong> — ' + importText.split(' ').length + ' words extracted';
-      toast('✅ Word document loaded — ' + importText.split('\n').length + ' lines', 'success');
-    } else if (ext === 'txt' || ext === 'rtf') {
-      importText = await file.text();
-      document.getElementById('import-text').value = importText;
-      infoEl.style.display = 'flex';
-      nameEl.innerHTML = '📄 Loaded: <strong>' + name + '</strong> — ' + importText.split(' ').length + ' words';
-      toast('✅ Text file loaded', 'success');
-    } else {
-      throw new Error('Unsupported file type. Use .docx, .doc, or .txt, or paste text manually.');
-    }
-  } catch(e) {
-    errEl.textContent = '❌ ' + e.message;
-    errEl.style.display = 'block';
-    toast('❌ ' + e.message, 'error');
-  }
-}
-
-function clearImport() {
-  document.getElementById('import-text').value = '';
-  document.getElementById('import-file-info').style.display = 'none';
-  document.getElementById('extract-result').style.display = 'none';
-  document.getElementById('extract-error').style.display = 'none';
-  document.getElementById('extract-progress').style.display = 'none';
-  document.getElementById('file-upload').value = '';
-  importText = '';
-}
-
-async function extractAndFill() {
-  const rawText = document.getElementById('import-text').value.trim();
-  if (!rawText) { toast('Please upload a file or paste programme text first', 'error'); return; }
-  // API key handled by backend
-
-  const btn = document.getElementById('extract-btn');
-  const spin = document.getElementById('extract-spin');
-  const progEl = document.getElementById('extract-progress');
-  const fillEl = document.getElementById('extract-prog-fill');
-  const statusEl = document.getElementById('extract-status');
-  const resultEl = document.getElementById('extract-result');
-  const errEl = document.getElementById('extract-error');
-
-  btn.disabled = true; spin.style.display = 'inline-block';
-  progEl.style.display = 'block';
-  resultEl.style.display = 'none';
-  errEl.style.display = 'none';
-
-  const setStatus = (msg, pct) => { statusEl.textContent = msg; fillEl.style.width = pct + '%'; };
-
-  try {
-    // ── STEP 1: Metadata ──
-    setStatus('Step 1/3 — Extracting programme metadata…', 15);
-    const metaPrompt = 'You are a curriculum analyst. Analyse the programme document below and extract structured information.\n\nReturn ONLY a valid JSON object. No text, no markdown, no backticks.\n\nRequired keys:\n{\n  "name": "Full programme name",\n  "award": "Award title",\n  "abbr": "Abbreviation e.g. B.Sc.T.(Chem)",\n  "prefix": "2-5 letter subject code e.g. CHT",\n  "school": "School/Faculty name",\n  "dept": "Department name",\n  "hod": "Head of Department name or empty string",\n  "level": "UHEQF level: 5=diploma 7=bachelor 8=masters 9=PhD",\n  "years": 3,\n  "mode": "Full-time or Part-time or Blended",\n  "date": "Document date",\n  "admission": "Admission requirements (2-4 sentences)"\n}\n\nPROGRAMME DOCUMENT:\n' + rawText.substring(0, 5000);
-    
-    const metaRaw = await callLlama(metaPrompt, 'Return ONLY valid JSON. No markdown. No explanation. No backticks.', 700);
-    setStatus('Step 1/3 — Metadata extracted ✓', 33);
-
-    let meta;
-    try {
-      const clean = metaRaw.replace(/```json|```/g,'').trim();
-      // Handle case where JSON starts mid-response
-      const jsonStart = clean.indexOf('{');
-      const jsonEnd = clean.lastIndexOf('}');
-      meta = JSON.parse(clean.slice(jsonStart, jsonEnd+1));
-    } catch(e) { throw new Error('Could not parse metadata. Try again: ' + e.message); }
-
-    // ── STEP 2: Courses ──
-    setStatus('Step 2/3 — Extracting and restructuring all courses into CBE format…', 45);
-    const px = meta.prefix || 'PRG';
-    const coursePrompt = 'You are a CBE curriculum designer for Kampala International University (KIU), Uganda.\n\nExtract ALL courses from the document and restructure them into KIU CBE Notional Hours format:\n- 1 Credit = 10 NH. NH = DH + SH + AH + OH.\n- Standard course: 100 NH = 10 Credits (target 6 courses per semester = 600 NH)\n- Industrial training/recess: DH=0, SH=30, AH=10, OH=160 = 200 NH = 20 Credits\n- Research project: DH=0, SH=80, AH=40, OH=80 = 200 NH\n- Lecture only: DH=45, SH=35, AH=10, OH=10\n- Lecture+Lab: DH=40, SH=30, AH=20, OH=10\n- Practical only: DH=0, SH=25, AH=10, OH=65\n\nCross-cutting courses keep original prefix (ICT, UCC, ENT). Programme courses use prefix: ' + px + '\n\nReturn ONLY a valid JSON array. No text, no markdown:\n[\n  {"year":1,"sem":"1","prefix":"' + px + '","name":"Course Name","type":"lab","DH":40,"SH":30,"AH":20,"OH":10,"elective":false}\n]\n\nsem: "1"=Semester1, "2"=Semester2, "R"=Recess\ntype: "lec","lab","prac","ind","proj"\n\nRemove misplaced courses. Ensure logical academic progression.\n\nPROGRAMME DOCUMENT:\n' + rawText.substring(0, 7000);
-
-    const coursesRaw = await callLlama(coursePrompt, 'Return ONLY valid JSON array. No markdown. No explanation. No backticks.', 3000);
-    setStatus('Step 2/3 — Courses extracted ✓', 66);
-
-    let extracted;
-    try {
-      const clean = coursesRaw.replace(/```json|```/g,'').trim();
-      const s = clean.indexOf('['), e = clean.lastIndexOf(']');
-      extracted = JSON.parse(clean.slice(s, e+1));
-      if (!Array.isArray(extracted)) throw new Error('Not an array');
-    } catch(e) { throw new Error('Could not parse courses JSON: ' + e.message); }
-
-    // ── STEP 3: Apply ──
-    setStatus('Step 3/3 — Filling all fields and rebuilding curriculum…', 85);
-
-    const setVal = (id, val) => { const el=document.getElementById(id); if(el&&val) el.value=val; };
-    setVal('p-name', meta.name);
-    setVal('p-award', meta.award);
-    setVal('p-abbr', meta.abbr);
-    setVal('p-prefix', meta.prefix);
-    setVal('p-school', meta.school);
-    setVal('p-dept', meta.dept);
-    setVal('p-hod', meta.hod);
-    setVal('p-level', String(meta.level||7));
-    setVal('p-years', String(parseInt(meta.years)||3));
-    setVal('p-mode', meta.mode);
-    setVal('p-date', meta.date);
-    setVal('p-admission', meta.admission);
-
-    // Rebuild courses array
-    courses = extracted.map((c, i) => ({
-      id: i + 1,
-      year: parseInt(c.year)||1,
-      sem: String(c.sem||'1'),
-      prefix: String(c.prefix||px).toUpperCase().substring(0,5),
-      name: String(c.name||'Course '+(i+1)),
-      type: c.type||'lab',
-      DH: parseInt(c.DH)||40, SH: parseInt(c.SH)||30,
-      AH: parseInt(c.AH)||20, OH: parseInt(c.OH)||10,
-      elective: !!c.elective,
-    }));
-    nextId = courses.length + 1;
-    assignCodes();
-
-    const semCount = new Set(courses.map(c=>c.year+'_'+c.sem)).size;
-    const totalNH = courses.filter(x=>!x.elective).reduce((s,c)=>s+getNH(c),0);
-    const totalCr = courses.filter(x=>!x.elective).reduce((s,c)=>s+getCredits(c),0);
-
-    enforceSemesterTargets({verbose:false});
-    assignCodes();
-    setStatus('Complete! All fields populated + semesters balanced.', 100);
-    SECTIONS.forEach(s => { sectionContent[s.key] = {text:'',done:false}; });
-    courseDetails = {};
-    updateApiStatus();
-
-    resultEl.innerHTML = '<strong>✅ Extraction Complete!</strong><br>' +
-      '• Programme: <strong>' + meta.name + '</strong><br>' +
-      '• ' + courses.length + ' courses across ' + semCount + ' teaching periods<br>' +
-      '• Total: <strong>' + totalNH + ' NH | ' + totalCr + ' Credits</strong><br>' +
-      '• All metadata fields auto-filled ✓ — Codes assigned following KIU CBE format ✓<br>' +
-      '<em style="color:var(--teal)">→ Moving to Curriculum Builder in 2 seconds…</em>';
-    resultEl.style.display = 'block';
-    toast('🎉 Programme imported and restructured successfully!', 'success');
-    setTimeout(() => switchTab('curriculum'), 2200);
-
-  } catch(e) {
-    errEl.textContent = '❌ Error: ' + e.message;
-    errEl.style.display = 'block';
-    toast('❌ ' + e.message, 'error');
-  } finally {
-    btn.disabled = false; spin.style.display = 'none';
-    setTimeout(() => { fillEl.style.width='0%'; }, 4000);
-  }
-}
-
-
-// ══════════════════════════════════════════
-//  PROGRAMME LOCAL STORAGE
-// ══════════════════════════════════════════
-const STORAGE_KEY = 'kiu_cbe_programmes_v2';
-
-function getAllProgrammes() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
-  catch(e) { return []; }
-}
-function saveProgrammes(progs) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(progs)); } catch(e) { toast('Storage error: ' + e.message, 'error'); }
-}
-
-function saveCurrentProgramme() {
-  var p = getProg();
-  assignCodes();
-  var snapshot = {
-    id: Date.now(),
-    savedAt: new Date().toISOString(),
-    meta: p,
-    courses: JSON.parse(JSON.stringify(courses)),
-    sectionContent: JSON.parse(JSON.stringify(sectionContent)),
-    courseDetails: JSON.parse(JSON.stringify(courseDetails)),
-  };
-  var progs = getAllProgrammes();
-  var idx = progs.findIndex(function(x){ return x.meta && x.meta.name === p.name; });
-  if (idx >= 0) { progs[idx] = snapshot; } else { progs.push(snapshot); }
-  saveProgrammes(progs);
-  renderProgrammesList();
-  toast('\u2705 "' + p.name + '" saved!', 'success');
-}
-
-function loadProgramme(id) {
-  var progs = getAllProgrammes();
-  var prog = progs.find(function(p){ return p.id === id; });
-  if (!prog) return;
-  var m = prog.meta;
-  function setVal(elId, val) { var el=document.getElementById(elId); if(el && val!==undefined) el.value=val; }
-  setVal('p-name',m.name); setVal('p-award',m.award); setVal('p-abbr',m.abbr);
-  setVal('p-prefix',m.prefix); setVal('p-school',m.school); setVal('p-dept',m.dept);
-  setVal('p-hod',m.hod); setVal('p-level',String(m.level||7)); setVal('p-years',String(m.years||3));
-  setVal('p-mode',m.mode); setVal('p-date',m.date); setVal('p-admission',m.admission);
-  courses = prog.courses || [];
-  nextId = Math.max.apply(null, courses.map(function(c){ return c.id||0; }).concat([0])) + 1;
-  SECTIONS.forEach(function(s){ sectionContent[s.key] = (prog.sectionContent && prog.sectionContent[s.key]) || {text:'',done:false}; });
-  if (prog.courseDetails) Object.assign(courseDetails, prog.courseDetails);
-  enforceSemesterTargets({verbose:false});
-  assignCodes();
-  renderUniversalRegistry();
-  toast('\u2705 "' + m.name + '" loaded!', 'success');
-  switchTab('curriculum');
-}
-
-function deleteProgramme(id) {
-  var progs = getAllProgrammes();
-  var prog = progs.find(function(p){ return p.id === id; });
-  if (!prog) return;
-  if (!confirm('Delete "' + (prog.meta&&prog.meta.name||'this programme') + '"? This cannot be undone.')) return;
-  saveProgrammes(progs.filter(function(p){ return p.id !== id; }));
-  renderProgrammesList();
-  toast('Programme deleted', 'info');
-}
-
-function renderProgrammesList() {
-  var el = document.getElementById('programmes-list');
-  if (!el) return;
-  var progs = getAllProgrammes();
-  if (!progs.length) {
-    el.innerHTML = '<p style="color:var(--gray-500);font-size:13px;font-style:italic;">No programmes saved yet. Click \u201cSave Current Programme\u201d to store your work.</p>';
-    return;
-  }
-  el.innerHTML = progs.map(function(p) {
-    var date = new Date(p.savedAt).toLocaleDateString('en-UG', {day:'2-digit',month:'short',year:'numeric'});
-    var secDone = SECTIONS.filter(function(s){ return p.sectionContent && p.sectionContent[s.key] && p.sectionContent[s.key].done; }).length;
-    var cDone = (p.courses||[]).filter(function(c){ return p.courseDetails && p.courseDetails[c.code] && p.courseDetails[c.code].done; }).length;
-    return '<div style="border:1.5px solid var(--gray-200);border-radius:6px;padding:12px 14px;margin-bottom:8px;background:white;display:flex;align-items:center;gap:12px;">' +
-      '<div style="flex:1">' +
-        '<div style="font-weight:700;color:var(--navy);font-size:13px">' + (p.meta&&p.meta.name||'Unnamed') + '</div>' +
-        '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' +
-          (p.meta&&p.meta.abbr||'') + ' \u00b7 Level ' + (p.meta&&p.meta.level||7) + ' \u00b7 ' + (p.meta&&p.meta.school||'') + '<br>' +
-          (p.courses||[]).length + ' courses \u00b7 ' + secDone + '/' + SECTIONS.length + ' sections \u00b7 ' + cDone + ' course details \u00b7 Saved ' + date +
-        '</div>' +
-      '</div>' +
-      '<div style="display:flex;gap:6px;flex-shrink:0">' +
-        '<button class="btn btn-teal btn-xs" onclick="loadProgramme(' + p.id + ')">Load</button>' +
-        '<button class="btn btn-gold btn-xs" onclick="downloadWordDocFor(' + p.id + ')">\ud83d\udcc4 Word</button>' +
-        '<button class="btn btn-red btn-xs" onclick="deleteProgramme(' + p.id + ')">\u2715</button>' +
-      '</div>' +
-    '</div>';
-  }).join('');
-}
-
-function exportAllProgrammes() {
-  var progs = getAllProgrammes();
-  if (!progs.length) { toast('No programmes saved yet', 'error'); return; }
-  var blob = new Blob([JSON.stringify(progs, null, 2)], {type:'application/json'});
-  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = 'KIU_CBE_Programmes_' + new Date().toISOString().slice(0,10) + '.json'; a.click();
-  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 5000);
-  toast('Programmes exported', 'success');
-}
-
-function importProgrammes(input) {
-  var file = input.files[0]; if (!file) return;
-  var reader = new FileReader();
-  reader.onload = function(e) {
-    try {
-      var progs = JSON.parse(e.target.result);
-      if (!Array.isArray(progs)) throw new Error('Invalid format');
-      var existing = getAllProgrammes();
-      progs.forEach(function(p) {
-        var idx = existing.findIndex(function(x){ return x.id === p.id; });
-        if (idx >= 0) existing[idx] = p; else existing.push(p);
-      });
-      saveProgrammes(existing);
-      renderProgrammesList();
-      toast('\u2705 ' + progs.length + ' programme(s) imported!', 'success');
-    } catch(e) { toast('\u274c Invalid JSON: ' + e.message, 'error'); }
-  };
-  reader.readAsText(file);
-  input.value = '';
-}
-
-function downloadWordDocFor(progId) {
-  var progs = getAllProgrammes();
-  var prog = progs.find(function(p){ return p.id === progId; });
-  if (!prog) return;
-  if (typeof JSZip === 'undefined') { toast('JSZip not loaded','error'); return; }
-  buildWordDoc(prog.meta, prog.courses||[], prog.sectionContent||{}, prog.courseDetails||{}).then(function(doc) {
-    var fname = ((prog.meta&&prog.meta.abbr)||'Programme').replace(/[^a-zA-Z0-9]/g,'_') + '_CBE_Programme.docx';
-    saveDocx(doc, fname, '\u2705 Downloaded!');
-  }).catch(function(e){ toast('\u274c ' + e.message,'error'); });
-}
-
-
-function renderUniversalRegistry() {
-  const el = document.getElementById('universal-registry-list');
-  if (!el) return;
-  const p = getProg();
-  const lev = p.level || '7';
-
-  // Check which UCC are already in the current programme
-  const presentKeys = new Set(courses.map(c => getUniversalKey(c)).filter(Boolean));
-
-  let html = `<div class="alert alert-info" style="margin-bottom:10px;font-size:12px;">
-    🔒 These <strong>9 UCC courses are fixed institution-wide</strong> — same code, name, DH/SH/AH/OH, NH and credits across every KIU programme at Level ${lev}.
-    Use the <strong>+ Add</strong> button to insert any missing course into the current curriculum automatically.
-  </div>
-  <table class="ctable" style="font-size:11.5px;">
-    <thead><tr>
-      <th style="width:130px">Code</th>
-      <th>Course Name</th>
-      <th class="center">Yr</th>
-      <th class="center">Sem</th>
-      <th class="center">DH</th>
-      <th class="center">SH</th>
-      <th class="center">AH</th>
-      <th class="center">OH</th>
-      <th class="center" style="color:var(--gold2)">NH</th>
-      <th class="center">Credits</th>
-      <th class="center">Type</th>
-      <th class="center" style="width:110px">Status</th>
-    </tr></thead><tbody>`;
-
-  var UCC_ORDER = ['UCC_ICF','UCC_ELS','UCC_CS','UCC_RM','UCC_CE','UCC_IN1','WRC','UCC_IN2','UCC_RR','UCC_IN3','UCC_IN4','UCC_IN5'];
-  UCC_ORDER.forEach((key,idx) => {
-    const def = UNIVERSAL[key];
-    if (!def) return;
-    const yr = def.year || 1;
-    const sm = def.sem || '1';
-    const smNum = sm==='R'?'3':sm;
-    const code = def.prefix + ' ' + lev + yr + smNum + String(idx+1).padStart(2,'0');
-    const nh = (def.DH||0)+(def.SH||0)+(def.AH||0)+(def.OH||0);
-    const cr = key==='WRC' ? '5 (NCHE)' : Math.round(nh/10);
-    const isWRC = key==='WRC';
-    const isIntern = key==='UCC_IN1'||key==='UCC_IN2';
-    const typeLabel = def.type==='lec'?'Lecture':def.type==='lab'?'Lec+Lab':def.type==='prac'?'Practical':def.type==='ind'?'Internship':'Project';
-    const inProg = presentKeys.has(key);
-    const rowBg = isWRC?'#fffbf0':isIntern?'#f0f5ff':'#f0fafa';
-    const rowBdr = isWRC?'border-left:3px solid var(--gold);':inProg?'border-left:3px solid var(--teal);':'border-left:3px solid transparent;';
-    html += `<tr style="background:${rowBg};${rowBdr}">
-      <td>
-        <span class="code-tag" style="font-size:10px">${code}</span>&nbsp;
-        <span class="badge ${isWRC?'badge-gold':'badge-teal'}" style="font-size:8px">${isWRC?'UCC':'UCC'}</span>
-      </td>
-      <td style="font-weight:600;color:var(--navy)">${def.name}</td>
-      <td style="text-align:center">${yr}</td>
-      <td style="text-align:center">${sm}</td>
-      <td style="text-align:center">${def.DH}</td>
-      <td style="text-align:center">${def.SH}</td>
-      <td style="text-align:center">${def.AH}</td>
-      <td style="text-align:center">${def.OH}</td>
-      <td style="text-align:center;font-weight:700;color:var(--teal)">${nh}</td>
-      <td style="text-align:center;font-weight:700">${cr}</td>
-      <td style="text-align:center"><span class="badge badge-gray" style="font-size:9px">${typeLabel}</span></td>
-      <td style="text-align:center">
-        ${inProg
-          ? `<span style="background:var(--green);color:white;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;white-space:nowrap">✓ Present</span>`
-          : `<button class="btn btn-teal btn-xs" onclick="insertUCC('${key}')" style="width:100%">+ Add</button>`
-        }
-      </td>
-    </tr>`;
-  });
-  html += `</tbody></table>
-  <div style="margin-top:8px;font-size:11px;color:var(--gray-500);">
-    * WRC = 5 NCHE credits (1 cr = 15 contact hrs). All other UCC = 1 credit = 10 NH.
-    &nbsp;|&nbsp; Values are <strong>locked</strong> — same for all programmes at UHEQF Level ${lev}.
-  </div>`;
-  el.innerHTML = html;
-}
-
-function insertUCC(key) {
-  const def = UNIVERSAL[key];
-  if (!def) { toast('UCC definition not found','error'); return; }
-  if (courses.some(c => getUniversalKey(c) === key)) {
-    toast('This UCC course is already in the programme','info'); return;
-  }
-  courses.push({
-    id: nextId++, year: def.year||1, sem: def.sem||'1',
-    prefix: def.prefix, name: def.name, type: def.type||'lec',
-    DH:def.DH||0, SH:def.SH||0, AH:def.AH||0, OH:def.OH||0, elective:false,
-  });
-  courses.sort((a,b)=>{
-    if(a.year!==b.year)return a.year-b.year;
-    const so={'1':1,'2':2,'R':3};
-    return (so[a.sem]||9)-(so[b.sem]||9);
-  });
-  assignCodes(); renderUniversalRegistry();
-  toast(`✅ "${def.name}" added to programme!`,'success');
-}
-
-
-function mkPara(text,opts){
-  opts=opts||{};
-  const jc=opts.align?`<w:jc w:val="${opts.align}"/>`:'<w:jc w:val="both"/>';
-  const sp=`<w:spacing w:before="${opts.before||0}" w:after="${opts.after!==undefined?opts.after:100}"/>`;
-  const ind=opts.indent?`<w:ind w:left="${opts.indent}" w:hanging="${opts.hanging||0}"/>`:'';
-  const style=opts.style?`<w:pStyle w:val="${opts.style}"/>`:'';
-  const num=opts.numId?`<w:numPr><w:ilvl w:val="${opts.ilvl||0}"/><w:numId w:val="${opts.numId}"/></w:numPr>`:'';
-  const pgBrk=opts.pageBreak?'<w:r><w:rPr/><w:br w:type="page"/></w:r>':'';
-  const shade=opts.shade?`<w:shd w:val="clear" w:color="auto" w:fill="${opts.shade}"/>`:'';
-  const content=typeof text==='string'?mkRuns(text,opts):(text||'');
-  return `<w:p><w:pPr>${style}${num}${jc}${sp}${ind}${shade}</w:pPr>${pgBrk}${content}</w:p>`;
-}
-
-function mkCell(content,opts){
-  opts=opts||{};
-  const w=opts.w?`<w:tcW w:w="${opts.w}" w:type="dxa"/>`:'<w:tcW w:w="1800" w:type="dxa"/>';
-  const span=opts.span?`<w:gridSpan w:val="${opts.span}"/>`:'';
-  const bc=opts.bc||'CCCCCC';
-  const borders=`<w:tcBorders><w:top w:val="single" w:sz="4" w:color="${bc}"/><w:bottom w:val="single" w:sz="4" w:color="${bc}"/><w:left w:val="single" w:sz="4" w:color="${bc}"/><w:right w:val="single" w:sz="4" w:color="${bc}"/></w:tcBorders>`;
-  const shade=opts.fill?`<w:shd w:val="clear" w:color="auto" w:fill="${opts.fill}"/>`:'';
-  const margins='<w:tcMar><w:top w:w="80" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar>';
-  const cellContent=typeof content==='string'?mkPara(content,{...opts,before:0,after:0,indent:0}):content;
-  return `<w:tc><w:tcPr>${w}${span}${borders}${shade}${margins}</w:tcPr>${cellContent}</w:tc>`;
-}
-
-function mkRow(cells,opts){
-  opts=opts||{};
-  const hdr=opts.header?'<w:tblHeader/>':'';
-  const h=opts.h?`<w:trHeight w:val="${opts.h}" w:hRule="exact"/>`:'';
-  return `<w:tr><w:trPr>${hdr}${h}</w:trPr>${cells}</w:tr>`;
-}
-
-function mkTable(rows,totalW,colWidths){
-  const cols=colWidths.map(w=>`<w:gridCol w:w="${w}"/>`).join('');
-  return `<w:tbl><w:tblPr><w:tblW w:w="${totalW}" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>${cols}</w:tblGrid>${rows}</w:tbl>`;
-}
-
-function h1(t,opts){opts=opts||{};return mkPara(t,{...opts,style:'KH1',align:'left',before:280,after:100});}
-function h2(t,opts){opts=opts||{};return mkPara(t,{...opts,style:'KH2',align:'left',before:200,after:80});}
-function h3(t,opts){opts=opts||{};return mkPara(t,{...opts,style:'KH3',align:'left',before:160,after:60});}
-function sp(n){n=n||1;return Array(n).fill('<w:p><w:pPr><w:spacing w:after="60"/></w:pPr></w:p>').join('');}
-
-// filterTopicResources and textToWordXML defined globally above
-
-
 
 
 function filterTopicResources(text) {
@@ -2223,6 +1754,7 @@ function textToWordXML(rawText) {
   var parts = [];
   var inBullet = false, inNumber = false, inLetter = false;
   var bulletId = null, numberId = null, letterId = null;
+  var inTable = false, tableRows = [];
   lines.forEach(function(line) {
     var t = line.trim();
     if (!t) {
@@ -2281,278 +1813,255 @@ function textToWordXML(rawText) {
 }
 
 
-function buildCoverPage(p){
-  const NAVY='0F2D4A',TEAL='117A7A';
-  const pageBorderSect=`<w:sectPr><w:pgBorders w:offsetFrom="page"><w:top w:val="single" w:sz="24" w:space="24" w:color="1A7A4A"/><w:left w:val="single" w:sz="24" w:space="24" w:color="1A7A4A"/><w:bottom w:val="single" w:sz="24" w:space="24" w:color="1A7A4A"/><w:right w:val="single" w:sz="24" w:space="24" w:color="1A7A4A"/></w:pgBorders><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1008" w:bottom="1440" w:left="1008"/></w:sectPr>`;
-  const parts=[];
-  parts.push(mkPara('',{align:'center',before:480,after:60}));
-  parts.push(mkPara('KAMPALA INTERNATIONAL UNIVERSITY',{align:'center',before:0,after:80,sz:26,bold:true,color:NAVY}));
-  parts.push(mkPara('[ K I U ]',{align:'center',before:0,after:0,sz:36,bold:true,color:NAVY}));
-  parts.push(mkPara('Exploring the Heights',{align:'center',before:0,after:240,sz:16,italic:true,color:TEAL}));
-  parts.push(mkPara(xes(p.school||''),{align:'center',before:80,after:60,sz:22,bold:true,color:NAVY}));
-  parts.push(mkPara(xes(p.dept||''),{align:'center',before:0,after:160,sz:22,color:'333333'}));
-  parts.push(mkPara(xes(p.award||p.name||''),{align:'center',before:60,after:0,sz:28,bold:true,color:NAVY}));
-  parts.push(mkPara(`(${xes(p.abbr||'')})`,{align:'center',before:0,after:200,sz:24,color:TEAL}));
-  parts.push(mkPara('Submitted to',{align:'center',before:80,after:40,sz:20,color:'555555'}));
-  parts.push(mkPara('National Council for Higher Education,',{align:'center',before:0,after:0,sz:22,bold:true,color:NAVY}));
-  parts.push(mkPara('for Accreditation',{align:'center',before:0,after:200,sz:22,bold:true,color:NAVY}));
-  parts.push(mkPara((p.date||'').toUpperCase(),{align:'center',before:120,after:0,sz:24,bold:true,color:NAVY}));
-  // Section break with page border (cover page only)
-  parts.push(`<w:p><w:pPr><w:jc w:val="center"/>${pageBorderSect}</w:pPr></w:p>`);
-  return parts.join('');
-}
 
-function buildTOC(){
-  const entries=[
-    ...SECTIONS.map(s=>({num:s.num,title:s.title})),
-    {num:'17.',title:'Curriculum Structure'},
-    {num:'',title:'DETAILED COURSE CONTENT'},
-  ];
-  let xml=h1('TABLE OF CONTENTS');
-  entries.forEach(e=>{
-    const tabStop=`<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8640"/></w:tabs>`;
-    xml+=`<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:before="0" w:after="80"/>${tabStop}</w:pPr>${mkRuns(`${e.num} ${e.title}`.trim(),{sz:22})}</w:p>`;
+// ══════════════════════════════════════════════════════════════════════════════
+//  WORD DOCUMENT ENGINE — mirrors Full Preview exactly, Times New Roman
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Build cover page ──────────────────────────────────────────────────────────
+async function saveDocx(xmlParts, filename, successMsg) {
+  if (typeof JSZip === 'undefined') { toast('JSZip not loaded — please reload','error'); return; }
+  var zip = new JSZip();
+  zip.file('[Content_Types].xml', xmlParts.contentTypes);
+  zip.folder('_rels').file('.rels', xmlParts.rels);
+  var word = zip.folder('word');
+  word.file('document.xml',  xmlParts.document);
+  word.file('styles.xml',    xmlParts.styles);
+  word.file('numbering.xml', xmlParts.numbering);
+  word.file('settings.xml',  xmlParts.settings);
+  word.file('fontTable.xml', xmlParts.fontTable);
+  word.folder('_rels').file('document.xml.rels', xmlParts.documentRels);
+  var docProps = zip.folder('docProps');
+  docProps.file('core.xml', xmlParts.core);
+  docProps.file('app.xml',  xmlParts.app);
+  var blob = await zip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    compression: 'DEFLATE',
+    compressionOptions: {level: 6}
   });
-  xml+=`<w:p><w:pPr/><w:r><w:rPr/><w:br w:type="page"/></w:r></w:p>`;
-  return xml;
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = filename || 'document.docx';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 5000);
+  toast(successMsg || 'Downloaded!', 'success');
 }
 
-function buildCurriculumXML(){
-  const NAVY='0F2D4A',WHITE='FFFFFF';
-  const CW=9166;
-  const COLS=[1500,3100,600,600,600,600,700,466];
-  const HDRS=['Code','Course Name','DH','SH','AH','OH','NH','Cr'];
-  let xml='';
-  const groups=groupBySem();
-  groups.forEach(g=>{
-    xml+=h2(getSemLabel(g.year,g.sem));
-    let rows='';
-    rows+=mkRow(HDRS.map((h,i)=>mkCell(h,{w:COLS[i],fill:NAVY,bc:NAVY,bold:true,color:WHITE,sz:18,align:'center'})).join(''),{header:true});
-    g.courses.forEach(c=>{
-      const nh=getNH(c),cr=getCredits(c),ukey=getUniversalKey(c);
-      const fill=ukey==='WRC'?'FFFBF0':ukey?'EEF8F8':c.elective?'FFFDF0':'FFFFFF';
-      const bc=ukey==='WRC'?'C8942A':ukey?'117A7A':'CCCCCC';
-      rows+=mkRow([
-        mkCell(c.code||'',{w:COLS[0],fill,bc,sz:16,font:'Courier New',bold:!!ukey}),
-        mkCell(`${stripMd(c.name)}${c.elective?' (E)':''}`,{w:COLS[1],fill,bc,sz:18,italic:!!c.elective}),
-        ...[c.DH,c.SH,c.AH,c.OH,nh,cr].map((v,i)=>mkCell(String(v),{w:COLS[i+2],fill,bc,sz:18,align:'center',bold:i>=4})),
+
+function buildCoverPage(p) {
+  var NAVY = '0F2D4A', TEAL = '117A7A', GREEN = '1A7A4A';
+  var pageBorder = '<w:pgBorders w:offsetFrom="page">'
+    + '<w:top w:val="single" w:sz="24" w:space="24" w:color="' + GREEN + '"/>'
+    + '<w:left w:val="single" w:sz="24" w:space="24" w:color="' + GREEN + '"/>'
+    + '<w:bottom w:val="single" w:sz="24" w:space="24" w:color="' + GREEN + '"/>'
+    + '<w:right w:val="single" w:sz="24" w:space="24" w:color="' + GREEN + '"/>'
+    + '</w:pgBorders>';
+  var sectPr = '<w:sectPr>' + pageBorder
+    + '<w:pgSz w:w="11906" w:h="16838"/>'
+    + '<w:pgMar w:top="1440" w:right="1008" w:bottom="1440" w:left="1008"/>'
+    + '</w:sectPr>';
+
+  var out = [];
+  out.push(mkPara('', {align:'center', before:720}));
+  out.push(mkPara('KAMPALA INTERNATIONAL UNIVERSITY', {align:'center', sz:26, bold:true, color:NAVY, before:0, after:80}));
+  out.push(mkPara('Kampala | Bushenyi | Uganda', {align:'center', sz:20, color:'555555', before:0, after:240, italic:true}));
+  out.push(mkPara(xes(p.school||''), {align:'center', sz:22, bold:true, color:NAVY, before:0, after:60}));
+  out.push(mkPara(xes(p.dept||''), {align:'center', sz:22, color:'333333', before:0, after:200}));
+  out.push(mkPara(xes(p.name||''), {align:'center', sz:30, bold:true, color:NAVY, before:0, after:60}));
+  out.push(mkPara('(' + xes(p.award||'') + ')  (' + xes(p.abbr||'') + ')', {align:'center', sz:24, color:TEAL, before:0, after:200}));
+  out.push(mkPara('Submitted to:', {align:'center', sz:20, color:'555555', before:0, after:40}));
+  out.push(mkPara('National Council for Higher Education (NCHE), Uganda', {align:'center', sz:22, bold:true, color:NAVY, before:0, after:40}));
+  out.push(mkPara('for Accreditation', {align:'center', sz:22, bold:true, color:NAVY, before:0, after:200}));
+  out.push(mkPara(String(p.date||'').toUpperCase(), {align:'center', sz:24, bold:true, color:NAVY, before:0, after:0}));
+  // Section break with page border (cover page only)
+  out.push('<w:p><w:pPr><w:jc w:val="center"/>' + sectPr + '</w:pPr></w:p>');
+  return out.join('');
+}
+
+// ── Build Table of Contents ───────────────────────────────────────────────────
+function buildTOC() {
+  var NAVY = '0F2D4A';
+  var out = h1('TABLE OF CONTENTS');
+  var entries = SECTIONS.map(function(s){ return s.num + ' ' + s.title; });
+  entries.push('17. Curriculum Structure');
+  entries.push('18. Research and Innovation');
+  entries.push('19. Community Engagement');
+  entries.push('20. Policies');
+  entries.push('21. Financial Resources and Sustainability');
+  entries.push('22. Students Welfare');
+  entries.push('DETAILED COURSE CONTENT');
+  entries.forEach(function(e) {
+    out += mkPara(e, {align:'left', sz:22, before:0, after:80});
+  });
+  out += '<w:p><w:pPr/><w:r><w:rPr/><w:br w:type="page"/></w:r></w:p>';
+  return out;
+}
+
+// ── Build curriculum matrix table XML ─────────────────────────────────────────
+function buildCurriculumXML() {
+  var NAVY = '0F2D4A', WHITE = 'FFFFFF';
+  var CW = 9166;
+  var COLS = [1500, 3200, 550, 550, 550, 550, 666, 600];
+  var HDRS = ['Code', 'Course Name', 'DH', 'SH', 'AH', 'OH', 'NH', 'Cr'];
+  var out = '';
+  var groups = groupBySem();
+  groups.forEach(function(g) {
+    out += h2(getSemLabel(g.year, g.sem));
+    var rows = '';
+    rows += mkRow(HDRS.map(function(h, i) {
+      return mkCell(h, {w:COLS[i], fill:NAVY, bc:NAVY, bold:true, color:WHITE, sz:18, align:'center'});
+    }).join(''), {header:true});
+    g.courses.forEach(function(c) {
+      var nh = getNH(c), cr = getCredits(c);
+      var ukey = getUniversalKey(c);
+      var fill = ukey==='WRC'?'FFFBF0':ukey?'EEF8F8':c.elective?'FFFDF0':'FFFFFF';
+      var bc   = ukey==='WRC'?'C8942A':ukey?'117A7A':'DDDDDD';
+      var nameTxt = stripMd(c.name) + (c.elective?' (E)':'');
+      rows += mkRow([
+        mkCell(c.code||'', {w:COLS[0], fill:fill, bc:bc, sz:17, bold:!!ukey}),
+        mkCell(nameTxt,    {w:COLS[1], fill:fill, bc:bc, sz:20, italic:!!c.elective}),
+        mkCell(String(c.DH), {w:COLS[2], fill:fill, bc:bc, sz:20, align:'center'}),
+        mkCell(String(c.SH), {w:COLS[3], fill:fill, bc:bc, sz:20, align:'center'}),
+        mkCell(String(c.AH), {w:COLS[4], fill:fill, bc:bc, sz:20, align:'center'}),
+        mkCell(String(c.OH), {w:COLS[5], fill:fill, bc:bc, sz:20, align:'center'}),
+        mkCell(String(nh),   {w:COLS[6], fill:fill, bc:bc, sz:20, bold:true, align:'center'}),
+        mkCell(String(cr),   {w:COLS[7], fill:fill, bc:bc, sz:20, bold:true, align:'center'}),
       ].join(''));
     });
-    const gNH=g.courses.filter(x=>!x.elective).reduce((s,c)=>s+getNH(c),0);
-    const gCr=g.courses.filter(x=>!x.elective).reduce((s,c)=>s+getCredits(c),0);
-    rows+=mkRow([
-      mkCell('Semester Total (Core)',{w:COLS.slice(0,6).reduce((a,b)=>a+b,0),fill:NAVY,bc:NAVY,bold:true,color:WHITE,sz:18,span:6,align:'right'}),
-      mkCell(String(gNH),{w:COLS[6],fill:NAVY,bc:NAVY,bold:true,color:WHITE,sz:18,align:'center'}),
-      mkCell(String(gCr),{w:COLS[7],fill:NAVY,bc:NAVY,bold:true,color:WHITE,sz:18,align:'center'}),
+    var gNH = semNH(g.courses), gCr = semCredits(g.courses);
+    rows += mkRow([
+      mkCell('Semester Total (Core)', {w:COLS.slice(0,6).reduce(function(a,b){return a+b;},0), fill:NAVY, bc:NAVY, bold:true, color:WHITE, sz:20, span:6, align:'right'}),
+      mkCell(String(gNH), {w:COLS[6], fill:NAVY, bc:NAVY, bold:true, color:WHITE, sz:20, align:'center'}),
+      mkCell(String(gCr), {w:COLS[7], fill:NAVY, bc:NAVY, bold:true, color:WHITE, sz:20, align:'center'}),
     ].join(''));
-    xml+=mkTable(rows,CW,COLS);xml+=sp();
+    out += mkTable(rows, CW, COLS);
+    out += sp(1);
   });
-  return xml;
+  return out;
 }
 
-function buildCourseDetailXML(c,detailText){
-  const NAVY='0F2D4A',TEAL='117A7A';
-  let xml='';
-  xml+=h2(`${c.code||''}\u00a0|\u00a0${xes(c.name)}`);
-  const nh=getNH(c),cr=getCredits(c);
-  const mCW=9166,mCols=[1500,3133,1500,3033];
-  const ukey=getUniversalKey(c);
-  const metaData=[
-    ['Course Code:',c.code||'','Year / Semester:',getSemLabel(c.year,c.sem)],
-    ['Notional Hours:',`${nh} NH`,'Credits:',String(c.prefix==='WRC'?'5 (NCHE)':cr)],
-    ['NH Breakdown:',`DH:${c.DH}\u00a0 SH:${c.SH}\u00a0 AH:${c.AH}\u00a0 OH:${c.OH}`,'Type:',c.type==='lab'?'Lecture+Lab':c.type==='prac'?'Practical':c.type==='ind'?'Internship':c.type==='proj'?'Research Project':'Lecture'],
+// ── Build one course detail block — mirrors preview exactly ──────────────────
+function buildCourseDetailXML(c, detailText) {
+  resetDocNumRegistry();
+  var nh = getNH(c), cr = getCredits(c);
+  var ukey = getUniversalKey(c);
+  var out = '';
+
+  // Course heading (matches preview "course-block-hd")
+  var uLabel = ukey==='WRC' ? ' [NCHE WRC — MANDATORY]' : ukey ? ' [ACROSS UNIVERSITY]' : '';
+  out += h2(String(c.code||'') + '  |  ' + xes(c.name) + uLabel);
+
+  // Meta table (matches preview course-meta-table)
+  var CW = 9166, mCols = [1500, 2733, 1500, 3433];
+  var typeLabel = c.type==='lab'?'Lecture + Lab':c.type==='prac'?'Practical':c.type==='ind'?'Internship':c.type==='proj'?'Research Project':'Lecture';
+  var metaRows = '';
+  var metaData = [
+    ['Course Code:', c.code||'',       'Year / Semester:', getSemLabel(c.year,c.sem)],
+    ['Notional Hours:', String(nh)+' NH', 'Credits:', String(ukey==='WRC'?'5 (NCHE)':cr)],
+    ['NH Breakdown:', 'DH:'+c.DH+'  SH:'+c.SH+'  AH:'+c.AH+'  OH:'+c.OH, 'Type:', typeLabel],
   ];
-  if(ukey){metaData.push(['Status:',ukey==='WRC'?'NCHE-Mandatory Work Readiness Course':'University Common Course — identical in all KIU programmes','','']);}
-  let metaRowsXML='';
-  metaData.forEach(row=>{
-    metaRowsXML+=mkRow(row.map((cell,i)=>mkCell(String(cell||''),{w:mCols[i],fill:i%2===0?'EEF4F8':'FFFFFF',bc:'DDDDDD',sz:19,bold:i%2===0})).join(''));
+  if (ukey) {
+    metaData.push(['Status:', ukey==='WRC'?'NCHE-Mandatory Work Readiness Course':'University Common Course — same across ALL KIU programmes','','']);
+  }
+  metaData.forEach(function(row) {
+    metaRows += mkRow(row.map(function(cell, i) {
+      return mkCell(String(cell||''), {w:mCols[i<2?i:i-2], fill:i%2===0?'EEF4F8':'FFFFFF', bc:'DDDDDD', sz:20, bold:i%2===0});
+    }).join(''));
   });
-  xml+=mkTable(metaRowsXML,mCW,mCols);xml+=sp();
-  if(detailText){const filtered=filterTopicResources(detailText);xml+=textToWordXML(filtered);}
-  else{xml+=mkPara('[Course content not yet generated. Use AI Generator tab.]',{italic:true,color:'888888',before:0,after:80});}
-  xml+=sp(2);return xml;
-}
+  out += mkTable(metaRows, CW, mCols);
+  out += sp(1);
 
-function buildDocxParts(p,bodyXML){
-  const now=new Date().toISOString();
-  const contentTypes=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
-  const rels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
-  const documentRels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`;
-  const document=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14"><w:body>${bodyXML}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="1008" w:bottom="1080" w:left="1008"/></w:sectPr></w:body></w:document>`;
-  const styles=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="en-GB"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="80" w:line="276" w:lineRule="auto"/><w:jc w:val="both"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style><w:style w:type="paragraph" w:styleId="KH1"><w:name w:val="KIU Heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="280" w:after="100"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:b/><w:bCs/><w:sz w:val="28"/><w:szCs w:val="28"/><w:color w:val="0F2D4A"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="KH2"><w:name w:val="KIU Heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="80"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:b/><w:bCs/><w:sz w:val="24"/><w:szCs w:val="24"/><w:color w:val="117A7A"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="KH3"><w:name w:val="KIU Heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="160" w:after="60"/><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:b/><w:bCs/><w:sz w:val="22"/><w:szCs w:val="22"/><w:color w:val="333333"/></w:rPr></w:style><w:style w:type="character" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/></w:style></w:styles>`;
-  // Dynamic numbering: generate unique numIds for each list instance to force restart
-  var numXmlInstances = '';
-  var numIdCounter = 10; // start from 10, leaving 1-9 for static use
-  if (typeof _docNumRegistry !== 'undefined' && _docNumRegistry.length) {
-    _docNumRegistry.forEach(function(entry) {
-      numXmlInstances += '<w:num w:numId="' + entry.numId + '"><w:abstractNumId w:val="' + entry.abstractId + '"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>';
-    });
+  // Content — same filtering as preview
+  if (detailText) {
+    var filtered = filterTopicResources(removeCourseHeading(detailText, c.name));
+    out += textToWordXML(filtered);
+  } else {
+    out += mkPara('[Course content not yet generated — use AI Generator tab.]', {italic:true, color:'888888', before:0, after:80});
   }
-  const numbering=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#x2022;"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#x25E6;"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="1080" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="2"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1)"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num>${numXmlInstances}</w:numbering>`;
-  const settings=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`;
-  const fontTable=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:font w:name="Times New Roman"><w:panose1 w:val="02020603050405020304"/><w:charset w:val="00"/><w:family w:val="Roman"/><w:pitch w:val="variable"/></w:font></w:fonts>`;
-  const core=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xe(stripMd(p.name||''))}</dc:title><dc:creator>KIU CBE Programme Generator</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`;
-  const app=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>KIU CBE Programme Generator</Application></Properties>`;
-  return{contentTypes,rels,documentRels,document,styles,numbering,settings,fontTable,core,app};
+  out += sp(2);
+  return out;
 }
 
-async function saveDocx(xmlParts,filename,successMsg){
-  if(typeof JSZip==='undefined'){toast('JSZip not loaded — please reload the page','error');return;}
-  const zip=new JSZip();
-  zip.file('[Content_Types].xml',xmlParts.contentTypes);
-  zip.folder('_rels').file('.rels',xmlParts.rels);
-  const word=zip.folder('word');
-  word.file('document.xml',xmlParts.document);
-  word.file('styles.xml',xmlParts.styles);
-  word.file('numbering.xml',xmlParts.numbering);
-  word.file('settings.xml',xmlParts.settings);
-  word.file('fontTable.xml',xmlParts.fontTable);
-  word.folder('_rels').file('document.xml.rels',xmlParts.documentRels);
-  const docProps=zip.folder('docProps');
-  docProps.file('core.xml',xmlParts.core);
-  docProps.file('app.xml',xmlParts.app);
-  const blob=await zip.generateAsync({type:'blob',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',compression:'DEFLATE',compressionOptions:{level:6}});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');a.href=url;a.download=filename||'document.docx';document.body.appendChild(a);a.click();document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(url),5000);
-  toast(successMsg||'✅ Downloaded!','success');
-}
-
-// ── Remove duplicate heading from AI-generated text ──────────────────────────
-// AI often repeats the section title on the first line. Strip it.
-function removeDuplicateHeading(text, sectionNum, sectionTitle) {
-  if (!text) return text;
-  var lines = text.split('\n');
-  var cleaned = [];
-  var skippedFirst = false;
-  for (var i = 0; i < lines.length; i++) {
-    var t = lines[i].trim();
-    if (!t) { cleaned.push(lines[i]); continue; }
-    if (!skippedFirst) {
-      // Strip leading # characters for comparison
-      var bare = t.replace(/^#+\s*/, '').replace(/\*\*/g, '').toLowerCase().trim();
-      // Check if it matches: "8. Programme Learning Outcomes" or "Section 8: ..." or just the title
-      var titleLower = sectionTitle.toLowerCase().replace(/[^a-z0-9 ]/g, '');
-      var numLower = sectionNum ? sectionNum.replace(/[^0-9.]/g, '') : '';
-      var bareCleaned = bare.replace(/^section\s+/, '').replace(/:/g,'').replace(/[^a-z0-9 ]/g, '');
-      // Match if the line is essentially the same as the section heading
-      if (bareCleaned.indexOf(titleLower.slice(0,20)) !== -1 ||
-          (numLower && bare.indexOf(numLower) === 0 && bare.indexOf(titleLower.slice(0,10)) !== -1)) {
-        skippedFirst = true; // skip this line — it's a duplicate heading
-        continue;
-      }
-      skippedFirst = true; // mark we've checked the first meaningful line
-    }
-    cleaned.push(lines[i]);
-  }
-  return cleaned.join('\n');
-}
-
-// Also strip duplicate heading from course detail text
-function removeCourseHeading(text, courseName) {
-  if (!text) return text;
-  var lines = text.split('\n');
-  var cleaned = [];
-  var skipped = false;
-  for (var i = 0; i < lines.length; i++) {
-    var t = lines[i].trim();
-    if (!t) { cleaned.push(lines[i]); continue; }
-    if (!skipped) {
-      var bare = t.replace(/^#+\s*/,'').replace(/\*\*/g,'').toLowerCase().trim();
-      var nameLower = (courseName||'').toLowerCase().replace(/[^a-z0-9 ]/g,'');
-      if (bare.length > 5 && nameLower.length > 5 && bare.indexOf(nameLower.slice(0,15)) !== -1) {
-        skipped = true; continue;
-      }
-      skipped = true;
-    }
-    cleaned.push(lines[i]);
-  }
-  return cleaned.join('\n');
-}
-
-
-// ── List restart registry for Word numbering ─────────────────────────────────
-var _docNumRegistry = [];
-var _docNumCounter = 10;
-
-function newNumId(abstractId) {
-  var id = _docNumCounter++;
-  _docNumRegistry.push({numId: id, abstractId: abstractId});
-  return String(id);
-}
-
-function resetDocNumRegistry() {
-  _docNumRegistry = [];
-  _docNumCounter = 10;
-}
-
-// ── Download current programme as Word doc ────────────────────────────────────
-async function downloadWordDoc() {
-  if (typeof JSZip === 'undefined') { toast('JSZip not loaded — please reload the page', 'error'); return; }
-  var spinEls = ['word-spin','word-spin2'];
-  spinEls.forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='inline-block'; });
-  try {
-    assignCodes();
-    var doc = await buildWordDoc(getProg(), courses, sectionContent, courseDetails);
-    var p = getProg();
-    var fname = ((p.abbr||p.name||'Programme').replace(/[^a-zA-Z0-9]/g,'_')) + '_CBE_Programme.docx';
-    saveDocx(doc, fname, '\u2705 Word document downloaded!');
-  } catch(e) {
-    toast('\u274c Word generation error: ' + e.message, 'error');
-    console.error(e);
-  } finally {
-    spinEls.forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; });
-  }
-}
-
-async function downloadAllCourseUnits() {
-  if (typeof JSZip === 'undefined') { toast('JSZip not loaded','error'); return; }
-  var btn = document.getElementById('units-spin'); if(btn) btn.style.display='inline-block';
-  try {
-    assignCodes();
-    var doc = await buildCourseUnitsDoc(getProg(), courses, courseDetails);
-    var p = getProg();
-    var fname = ((p.abbr||'Programme').replace(/[^a-zA-Z0-9]/g,'_')) + '_Course_Units.docx';
-    saveDocx(doc, fname, '\u2705 Course Units downloaded!');
-  } catch(e) { toast('\u274c ' + e.message,'error'); console.error(e); }
-  finally { if(btn) btn.style.display='none'; }
-}
-
-async function downloadUCCCourses() {
-  if (typeof JSZip === 'undefined') { toast('JSZip not loaded','error'); return; }
-  try {
-    var doc = await buildUCCDoc();
-    saveDocx(doc, 'KIU_University_Common_Courses_UCC.docx', '\u2705 UCC downloaded!');
-  } catch(e) { toast('\u274c ' + e.message,'error'); }
-}
-
-
-async function buildWordDoc(p,coursesArr,secContent,cDetails){
+// ── Build the full Word document ──────────────────────────────────────────────
+async function buildWordDoc(p, coursesArr, secContent, cDetails) {
+  resetDocNumRegistry();
   assignCodes();
-  const groups=groupBySem();
-  let body='';
-  body+=buildCoverPage(p);
-  body+=buildTOC();
-  SECTIONS.forEach(s=>{
+  var groups = groupBySem();
+  var body = '';
+
+  // 1. Cover page
+  body += buildCoverPage(p);
+
+  // 2. Table of Contents
+  body += buildTOC();
+
+  // 3. All 16 NCHE programme sections (1-16)
+  var sectionOrder = [
+    ['intro','1.','Introduction'],
+    ['governance','2.','Governance and Management'],
+    ['nameCode','3.','Programme Name, Code and Duration'],
+    ['description','4.','Programme Description'],
+    ['development','5.','Programme Development/Review Process'],
+    ['rationale','6.','Programme Rationale/Justification'],
+    ['competences','7.','Programme Competences'],
+    ['outcomes','8.','Programme Learning Outcomes'],
+    ['targetGroup','9.','Target Group'],
+    ['admission','10.','Programme Entry/Admission Requirements'],
+    ['humanRes','11.','Human Resources'],
+    ['infrastructure','12.','Physical Infrastructure and Learning Resources'],
+    ['delivery','13.','Modes/Strategies of Delivery'],
+    ['assessment','14.','Modes/Strategies of Assessment'],
+    ['progression','15.','Progression'],
+    ['gradLoad','16.','Minimum Graduation Load'],
+  ];
+  sectionOrder.forEach(function(s) {
     resetDocNumRegistry();
-    body+=h1(s.num + ' ' + s.title);
-    var rawText = secContent[s.key] && secContent[s.key].text || '';
-    // Strip any duplicate heading from the AI text (first non-empty line if it matches section title)
-    rawText = removeDuplicateHeading(rawText, s.num, s.title);
-    body+=textToWordXML(rawText);
-    body+=sp();
+    body += h1(s[1] + ' ' + s[2]);
+    var rawText = secContent[s[0]] && secContent[s[0]].text || '';
+    rawText = removeDuplicateHeading(rawText, s[1], s[2]);
+    body += textToWordXML(rawText);
+    body += sp(1);
   });
-  body+=`<w:p><w:pPr/><w:r><w:rPr/><w:br w:type="page"/></w:r></w:p>`;
-  body+=h1('17. Curriculum Structure');
-  body+=buildCurriculumXML();
-  body+=`<w:p><w:pPr/><w:r><w:rPr/><w:br w:type="page"/></w:r></w:p>`;
-  body+=h1('DETAILED COURSE CONTENT');
-  groups.forEach(g=>{
-    body+=h2(getSemLabel(g.year,g.sem));
-    g.courses.forEach(c=>{body+=buildCourseDetailXML(c,cDetails[c.code]&&cDetails[c.code].text||'');});
+
+  // 4. Curriculum Structure (Section 17)
+  body += '<w:p><w:pPr/><w:r><w:rPr/><w:br w:type="page"/></w:r></w:p>';
+  body += h1('17. Curriculum Structure');
+  body += h2('Table: Curriculum Structure / Matrix');
+  body += mkPara('Course Code format: ' + xes(p.prefix||'') + ' ' + (p.level||7) + '[Year][Sem][Serial]', {align:'left', sz:20, before:0, after:120, italic:true});
+  body += buildCurriculumXML();
+
+  // 5. Sections 18–22
+  var latterSections = [
+    ['research','18.','Research and Innovation'],
+    ['community','19.','Community Engagement'],
+    ['policies','20.','Policies'],
+    ['financial','21.','Financial Resources and Sustainability'],
+    ['welfare','22.','Students Welfare'],
+  ];
+  latterSections.forEach(function(s) {
+    resetDocNumRegistry();
+    body += h1(s[1] + ' ' + s[2]);
+    var rawText = secContent[s[0]] && secContent[s[0]].text || '';
+    rawText = removeDuplicateHeading(rawText, s[1], s[2]);
+    body += textToWordXML(rawText);
+    body += sp(1);
   });
-  return buildDocxParts(p,body);
+
+  // 6. Detailed Course Content
+  body += '<w:p><w:pPr/><w:r><w:rPr/><w:br w:type="page"/></w:r></w:p>';
+  body += h1('DETAILED COURSE CONTENT');
+  groups.forEach(function(g) {
+    body += h2(getSemLabel(g.year, g.sem));
+    g.courses.forEach(function(c) {
+      body += buildCourseDetailXML(c, cDetails[c.code] && cDetails[c.code].text || '');
+    });
+  });
+
+  return buildDocxParts(p, body);
 }
+
+
 
 async function buildCourseUnitsDoc(p,coursesArr,cDetails){
   assignCodes();
@@ -3179,7 +2688,7 @@ function courseDetailPrompt(c) {
     + '- Week: e.g. Week 1, Week 2 (bold)\n'
     + '- A avg=' + wksDir + 'h/wk, B avg=' + wksSelf + 'h/wk, C avg=' + wksApp + 'h/wk, D avg=' + wksAss + 'h/wk\n'
     + '- Use exact numbers, no ranges. Every cell must be filled.\n'
-    + '- Activity Rationale: cite a learning theory (Bloom, Kolb, Vygotsky, Biggs)\n'
+    + ''
     + 'TOTALS row: | **TOTALS** | | | | **' + dh + '** | **' + sh + '** | **' + ah + '** | **' + oh + '** | **' + nh + '** | CBE Blend C+D=[calculate]% |\n\n'
     + '**Rationale for Sequencing** (2 paragraphs) | **CBE Blend Verification** (C+D must be >=50%)\n\n'
     + '## STEP 9 - Evidence-based Assessments\n'

@@ -3070,6 +3070,91 @@ ${ctx}`,
 // ══════════════════════════════════════════
 
 
+function courseDetailPrompt(c) {
+  var p = getProg();
+  var ukey = getUniversalKey(c);
+  var nh = getNH(c);
+  var cr = getCredits(c);
+  var weeks = Math.max(6, Math.min(15, Math.round((c.DH||0)/3) || 12));
+  var dh=c.DH||0, sh=c.SH||0, ah=c.AH||0, oh=c.OH||0;
+  var wksDir  = (dh/weeks).toFixed(1);
+  var wksSelf = (sh/weeks).toFixed(1);
+  var wksApp  = (ah/weeks).toFixed(1);
+  var wksAss  = (oh/weeks).toFixed(1);
+  var typeLabel = c.type==='lab'?'Lecture + Laboratory':
+                  c.type==='prac'?'Practical/Applied':
+                  c.type==='ind'?'Industrial Internship/Attachment':
+                  c.type==='proj'?'Research Project':'Lecture';
+  var prog   = stripMd(p.name||'');
+  var school = stripMd(p.school||'');
+  var dept   = stripMd(p.dept||'');
+  var cname  = stripMd(c.name||'');
+  var code   = c.code||'';
+  var sem    = getSemLabel(c.year, c.sem);
+  var crLabel= ukey==='WRC'?'5 (NCHE)':String(cr);
+
+  return 'Generate a COMPLETE, HIGHLY DETAILED 15-step CBE course profile.\n'
+    + 'Follow Biggs (2003) constructive alignment and NCHE Uganda CBE framework.\n'
+    + 'Be thorough, specific, contextualised to Uganda/East Africa. Do NOT skip any step.\n'
+    + 'Do NOT truncate or summarise. Write FULL content for every section.\n\n'
+    + 'INSTITUTION: Kampala International University (KIU), Uganda\n'
+    + 'PROGRAMME: ' + prog + ' (UHEQF Level ' + (p.level||7) + ')\n'
+    + 'SCHOOL: ' + school + '\n'
+    + 'DEPARTMENT: ' + dept + '\n\n'
+    + 'COURSE: ' + cname + '\n'
+    + 'CODE: ' + code + ' | SEMESTER: ' + sem + ' | TYPE: ' + typeLabel + '\n'
+    + 'NH: ' + nh + ' (DH:' + dh + ' SH:' + sh + ' AH:' + ah + ' OH:' + oh + ') | Credits: ' + crLabel + '\n'
+    + 'Teaching weeks: ' + weeks + ' | Per-week avg: A=' + wksDir + 'h B=' + wksSelf + 'h C=' + wksApp + 'h D=' + wksAss + 'h\n\n'
+    + '=== GENERATE ALL 15 STEPS IN FULL ===\n\n'
+    + '## STEP 1 - Course Justification and Aims\n'
+    + '**Course Justification** (2 paragraphs: relevance to ' + prog + ', gap filled, Uganda/East Africa industry relevance)\n'
+    + '**Course Aims** (4 aims beginning "Upon completing this course, students will...")\n'
+    + '**Course Description** (120-150 words: scope, CBE approach, industry links)\n\n'
+    + '## STEP 2 - Cognitive Domain Outcomes\n'
+    + '**Cognitive Learning Outcomes** (5-6 outcomes spanning all Bloom levels)\n'
+    + '**Bloom Verbs Used** | **Bloom Levels Addressed** | **Assessment Linkage**\n\n'
+    + '## STEP 3 - Affective Domain Outcomes\n'
+    + '**Affective Learning Outcomes** (4 outcomes) | **Values and Dispositions** (5 values)\n'
+    + '**Strategies** | **Evidence and Measurement**\n\n'
+    + '## STEP 4 - Psychomotor Domain Outcomes\n'
+    + '**Psychomotor Outcomes** (4 hands-on outcomes) | **Practical Activities**\n'
+    + '**Practical Assessment** | **Equipment and Materials**\n\n'
+    + '## STEP 5 - Competency Gap Analysis\n'
+    + '**Current State** | **Desired State** | **Identified Gaps** | **Priority Level**\n\n'
+    + '## STEP 6 - Map Knowledge and Skills to Competencies\n'
+    + '**Core Competencies** (4-5 numbered) | **Knowledge Areas** | **Skills** (4-5) | **Mapping Notes**\n\n'
+    + '## STEP 7 - SMART Learning Objectives\n'
+    + 'Write 6 SMART objectives: "Learners will be able to [verb] [outcome] by end of Week [N]."\n\n'
+    + '## STEP 8 - Plan Course Content, Notional Hours and Engagement Activities\n\n'
+    + '**Course Content Overview** (100 words)\n\n'
+    + '**Topic-by-Topic Content Plan** - Generate ALL ' + weeks + ' weeks with this exact table:\n\n'
+    + '| Week | Topic/Subtopic | Key Content | Bloom Level | A hrs Directed | B hrs Self-dir | C hrs Applied | D hrs Assessed | Total h | Teaching Method | Learner Activity | Activity Rationale | Assessment Type | Resources Required | Performance Indicator | Competency Link |\n'
+    + '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\n'
+    + 'Rules: A avg=' + wksDir + 'h, B avg=' + wksSelf + 'h, C avg=' + wksApp + 'h, D avg=' + wksAss + 'h per week\n'
+    + 'TOTALS row: | **TOTALS** | | | | **' + dh + '** | **' + sh + '** | **' + ah + '** | **' + oh + '** | **' + nh + '** | CBE Blend C+D=[calculate]% |\n\n'
+    + '**Rationale for Sequencing** (2 paragraphs) | **CBE Blend Verification** (C+D must be >=50%)\n\n'
+    + '## STEP 9 - Evidence-based Assessments\n'
+    + '**Formative** (4 specific) | **Summative** (Coursework 60% + Exam 40%)\n'
+    + '**Rubric** (4 competencies x 4 levels: Excellent/Proficient/Developing/Beginning)\n'
+    + '**Evidence Types** | **Mastery Criteria** | **Competency-Assessment Matrix**\n\n'
+    + '## STEP 10 - Delivery Methods\n'
+    + '**Modality** | **Tools** (Moodle, Zoom, Google Workspace) | **Formats** | **Accessibility**\n\n'
+    + '## STEP 11 - Engaging Learning Activities\n'
+    + '**Core Activities** (5 named activities) | **Collaborative Elements** | **Gamification** | **Real-world Scenarios** (Uganda/East Africa)\n\n'
+    + '## STEP 12 - Flexible Learning Paths\n'
+    + '**Prerequisites** | **Within-Course Progression** | **Self-paced Mechanism** | **Adaptations** | **RPL Provision**\n\n'
+    + '## STEP 13 - Instructional Strategies and Resource Materials\n'
+    + '**Strategy-Purpose-Resource Matrix** (5 rows: Strategy | Purpose | Resource)\n'
+    + '**Resource Materials** | **Design Notes** | **Localised References (APA 7th, 2018-2025)** (6 refs, some East African)\n\n'
+    + '## STEP 14 - Continuous Feedback\n'
+    + '**Mechanisms** (4) | **Schedule** (with turnaround days) | **Improvement Process** | **Success Metrics**\n\n'
+    + '## STEP 15 - Assessment Weights and Credit Structure\n'
+    + '**Coursework: 60% | Exam: 40%**\n'
+    + '**Competence-Assessment Matrix** | **KIU Grading Scale** (A=80-100, B+=75-79, B=70-74, C+=65-69, C=60-64, D+=55-59, F<55)\n'
+    + '**Authentic Assessments** (3 tasks) | **Reading List (APA 7th, 8-10 refs, 2018-2025)**';
+}
+
+
 function renderGenerateTab() {
   // Populate WRC units badges
   const wrcBadgesEl = document.getElementById('wrc-units-badges');

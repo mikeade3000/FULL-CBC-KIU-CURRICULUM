@@ -2551,6 +2551,97 @@ async function buildUCCDoc(){
 //  Falls back to IndexedDB for offline use.
 // ══════════════════════════════════════════════════════════════════════════════
 
+// SEMESTER ENFORCEMENT ENGINE - 600 NH / 60 Credits per semester
+var SEM_TARGET_NH = 600;
+var STD_COURSE_NH = 100;
+
+function enforceSemesterTargets(options) {
+  options = options || {};
+  var groups = groupBySem();
+  groups.forEach(function(g) {
+    if (g.sem === 'R') return;
+    var coreCourses = g.courses.filter(function(c){ return !c.elective; });
+    var lockedNH = coreCourses.filter(function(c){ return isUniversal(c); })
+                    .reduce(function(s,c){ return s+getNH(c); }, 0);
+    var adjustable = coreCourses.filter(function(c){ return !isUniversal(c); });
+    var neededNH = SEM_TARGET_NH - lockedNH;
+    if (adjustable.length === 0 && neededNH > 0) {
+      var p = getProg();
+      var toAdd = Math.max(1, Math.round(neededNH / STD_COURSE_NH));
+      for (var i=0;i<toAdd;i++) {
+        courses.push({id:nextId++,year:g.year,sem:g.sem,prefix:p.prefix||'PRG',
+          name:'[Programme Course - Edit Name]',type:'lab',DH:40,SH:30,AH:20,OH:10,elective:false});
+      }
+    }
+    var fresh = courses.filter(function(c){
+      return c.year===g.year&&c.sem===g.sem&&!c.elective&&!isUniversal(c);
+    });
+    if (!fresh.length) return;
+    var freshLockedNH = courses.filter(function(c){
+      return c.year===g.year&&c.sem===g.sem&&!c.elective&&isUniversal(c);
+    }).reduce(function(s,c){return s+getNH(c);},0);
+    var freshNeeded = SEM_TARGET_NH - freshLockedNH;
+    var perCourse = Math.round(freshNeeded/fresh.length);
+    var remainder = freshNeeded-(perCourse*fresh.length);
+    fresh.forEach(function(c,idx){
+      var targetNH=perCourse+(idx===fresh.length-1?remainder:0);
+      var fixedNH=(parseInt(c.DH)||0)+(parseInt(c.AH)||0)+(parseInt(c.OH)||0);
+      c.SH=Math.max(0,targetNH-fixedNH);
+    });
+  });
+  courses.sort(function(a,b){
+    if(a.year!==b.year)return a.year-b.year;
+    var so={'1':1,'2':2,'R':3};
+    if((so[a.sem]||9)!==(so[b.sem]||9))return(so[a.sem]||9)-(so[b.sem]||9);
+    return(isUniversal(a)?0:1)-(isUniversal(b)?0:1);
+  });
+  assignCodes();
+  return {report:[]};
+}
+
+function autoBalanceNH() {
+  enforceSemesterTargets({verbose:true});
+  renderCurriculum();
+  renderUniversalRegistry();
+  toast('Semesters enforced to 600 NH / 60 Credits','success');
+}
+
+function balanceOneSemester(year, sem) {
+  var core = courses.filter(function(c){return c.year===year&&c.sem===sem&&!c.elective;});
+  var adjustable = core.filter(function(c){return !isUniversal(c);});
+  var lockedNH = core.filter(function(c){return isUniversal(c);}).reduce(function(s,c){return s+getNH(c);},0);
+  var neededNH = SEM_TARGET_NH - lockedNH;
+  if (!adjustable.length) {
+    var p=getProg();
+    courses.push({id:nextId++,year:year,sem:sem,prefix:p.prefix||'PRG',
+      name:'[Programme Course]',type:'lab',DH:40,SH:30,AH:20,OH:10,elective:false});
+    assignCodes();renderCurriculum();
+    toast('Added placeholder to '+getSemLabel(year,sem),'success');return;
+  }
+  var perCourse=Math.round(neededNH/adjustable.length);
+  var remainder=neededNH-(perCourse*adjustable.length);
+  adjustable.forEach(function(c,idx){
+    var targetNH=perCourse+(idx===adjustable.length-1?remainder:0);
+    var fixedNH=(parseInt(c.DH)||0)+(parseInt(c.AH)||0)+(parseInt(c.OH)||0);
+    c.SH=Math.max(0,targetNH-fixedNH);
+  });
+  assignCodes();renderCurriculum();
+  var finalNH=courses.filter(function(c){return c.year===year&&c.sem===sem&&!c.elective;})
+    .reduce(function(s,c){return s+getNH(c);},0);
+  toast(getSemLabel(year,sem)+': '+finalNH+' NH / '+Math.round(finalNH/10)+' Credits','success');
+}
+
+function showBalanceReport() {
+  var lines=['SEMESTER REPORT - Target: 600 NH / 60 Credits',''];
+  groupBySem().forEach(function(g){
+    if(g.sem==='R')return;
+    var nh=g.courses.filter(function(c){return !c.elective;}).reduce(function(s,c){return s+getNH(c);},0);
+    lines.push((Math.abs(nh-600)<=2?'OK ':'!! ')+getSemLabel(g.year,g.sem)+': '+nh+' NH');
+  });
+  alert(lines.join('\n'));
+}
+
+
 var _db = null;
 var REGISTRY_BACKEND = (typeof window !== 'undefined' && window.KIU_BACKEND_URL)
   ? window.KIU_BACKEND_URL : 'https://full-cbc-kiu-curriculum.onrender.com';

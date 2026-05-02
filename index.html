@@ -2551,6 +2551,585 @@ async function buildUCCDoc(){
 //  Falls back to IndexedDB for offline use.
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ── CURRICULUM & GENERATOR FUNCTIONS (restored) ────────────────────────────
+
+function esc(s) { return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+
+function refreshCodes() { assignCodes(); renderCurriculum(); }
+
+
+function updateCourse(id, field, value) {
+  const c = courses.find(x=>x.id===id);
+  if (!c) return;
+  if (['DH','SH','AH','OH'].includes(field)) value = parseInt(value)||0;
+  if (field === 'elective') value = !!value;
+  c[field] = value;
+  if (field !== 'name') { assignCodes(); renderCurriculum(); }
+}
+
+
+function deleteCourse(id) {
+  courses = courses.filter(c=>c.id!==id);
+  assignCodes(); renderCurriculum();
+}
+
+
+function addCourse() {
+  courses.push({id:nextId++, year:1, sem:'1', prefix:getProg().prefix, name:'New Course', type:'lec', DH:45, SH:35, AH:10, OH:10, elective:false});
+  assignCodes(); renderCurriculum();
+}
+
+
+function addCourseTo(year, sem) {
+  courses.push({id:nextId++, year, sem, prefix:getProg().prefix, name:'New Course', type:'lab', DH:40, SH:30, AH:20, OH:10, elective:false});
+  assignCodes(); renderCurriculum();
+}
+
+// ══════════════════════════════════════════
+//  SEMESTER ENFORCEMENT ENGINE
+//  Target: 600 NH = 60 Credits per regular semester
+//  Rules:
+//   1. UCC/WRC courses are LOCKED — their NH never changes
+//   2. Programme-specific courses: SH adjusted to fill gap
+//   3. If too many courses: electives removed first, then excess trimmed
+//   4. If too few courses: placeholder courses added to hit 600 NH
+//   5. Each programme-specific course targets exactly 100 NH (10 credits)
+//   6. Internship semesters (IN1/IN2 present): target 600 NH still applies
+// ══════════════════════════════════════════
+
+const SEM_TARGET_CR = 60;
+// (defined below)
+
+
+function renderCurriculum() {
+  assignCodes();
+  const area = document.getElementById('curriculum-area');
+  if (!area) return;
+  const groups = groupBySem();
+  let html = '';
+  let totalNH=0, totalCred=0;
+
+  groups.forEach(g => {
+    const coreC = g.courses.filter(c=>!c.elective);
+    const electC = g.courses.filter(c=>c.elective);
+    const gNH = semNH(g.courses);
+    const gCred = semCredits(g.courses);
+    totalNH += gNH; totalCred += gCred;
+    const isRecess = g.sem === 'R';
+    const nhOk = isRecess || Math.abs(gNH - 600) <= 2;
+    const nhWarn = !isRecess && gNH < 600;
+    const nhOver = !isRecess && gNH > 610;
+    const nhColor = isRecess ? 'color:var(--gray-500)' : nhOk ? 'color:var(--green)' : nhWarn ? 'color:var(--red)' : 'color:var(--gold)';
+    const nhIcon = isRecess ? '📦' : nhOk ? '✅' : nhWarn ? '❌' : '⚠️';
+    const nhLabel = isRecess ? `${gNH} NH` : `${gNH} NH ${nhOk?'✓':(gNH<600?'('+(600-gNH)+' short)':'('+(gNH-600)+' over)')}`;
+    const crOk = isRecess || Math.abs(gCred - 60) <= 1;
+    const crLabel = isRecess ? `${gCred} Cr` : `${gCred} Cr ${crOk?'✓':'(need 60)'}`;
+    const progPct = isRecess ? 100 : Math.min(100, Math.round(gNH/600*100));
+    const progColor = nhOk?'var(--green)':nhWarn?'var(--red)':'var(--gold)';
+
+    html += `<div class="sem-block">
+      <div class="sem-hd">
+        <span>${getSemLabel(g.year,g.sem)}</span>
+        <span class="sem-info">
+          <span style="${nhColor}">${nhIcon} ${nhLabel}</span>
+          <span style="${crOk?'color:var(--teal2)':'color:var(--red)'}">${crLabel}</span>
+          <span>📚 ${coreC.length} core${electC.length?' + '+electC.length+' E':''}</span>
+          ${!isRecess&&!nhOk?`<button class="btn btn-xs" style="background:rgba(255,255,255,0.2);color:white;border:1px solid rgba(255,255,255,0.3);font-size:10px;padding:1px 7px;cursor:pointer" onclick="balanceOneSemester(${g.year},'${g.sem}')">Fix →</button>`:''}
+        </span>
+      </div>
+      <div style="height:4px;background:rgba(0,0,0,0.3);border-radius:0">
+        <div style="height:100%;width:${progPct}%;background:${progColor};border-radius:0;transition:width .3s"></div>
+      </div>
+      <table class="ctable">
+        <thead>
+          <tr>
+            <th style="width:120px">Code</th>
+            <th>Course Name</th>
+            <th class="center" style="width:55px">Prefix</th>
+            <th class="center" style="width:38px">DH</th>
+            <th class="center" style="width:38px">SH</th>
+            <th class="center" style="width:38px">AH</th>
+            <th class="center" style="width:38px">OH</th>
+            <th class="center" style="width:48px">NH</th>
+            <th class="center" style="width:38px">Cred</th>
+            <th class="center" style="width:70px">Type</th>
+            <th class="center" style="width:80px">Elective</th>
+            <th class="center" style="width:42px">Del</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+    [...coreC, ...electC].forEach(c => {
+      const nh = getNH(c);
+      const cr = getCredits(c);
+      const uniRowKey = getUniversalKey(c);
+      const isInternship = uniRowKey==='UCC_IN1'||uniRowKey==='UCC_IN2';
+      const rowClass = (uniRowKey==='WRC')?'wrc':(isInternship?'recess':(uniRowKey?'universal':(c.elective?'elective':'')));
+      html += `<tr class="${rowClass}" id="row-${c.id}">
+        <td>
+          <span class="code-tag">${c.code||''}</span>
+          ${isUniversal(c)?'<span class="badge badge-gold" style="font-size:9px;margin-left:3px;" title="Universal KIU course — code &amp; name standardised across all programmes">🔒 UNI</span>':''}
+        </td>
+        <td>
+          ${isUniversal(c)
+            ? '<span style="font-size:12px;font-weight:600;color:var(--navy);padding:3px 6px;display:block;">'+esc(c.name)+'</span><span style="font-size:10px;color:var(--teal);padding:0 6px;">'+(c.wrc||UNIVERSAL[getUniversalKey(c)]?.wrc?'📋 NCHE Mandatory WRC':'🔁 University-wide')+'</span>'
+            : '<input type="text" value="'+esc(c.name)+'" onchange="updateCourse('+c.id+',\'name\',this.value)" style="min-width:200px;">'}
+        </td>
+        <td style="text-align:center">
+          ${isUniversal(c)
+            ? '<span style="font-size:11px;font-family:var(--font-mono);color:var(--navy);">'+c.prefix+'</span>'
+            : '<input type="text" value="'+c.prefix+'" onchange="updateCourse('+c.id+',\'prefix\',this.value.toUpperCase())" style="width:50px;text-align:center;">'}
+        </td>
+        <td style="text-align:center"><input type="number" value="${c.DH}" min="0" onchange="updateCourse(${c.id},'DH',this.value)"></td>
+        <td style="text-align:center"><input type="number" value="${c.SH}" min="0" onchange="updateCourse(${c.id},'SH',this.value)"></td>
+        <td style="text-align:center"><input type="number" value="${c.AH}" min="0" onchange="updateCourse(${c.id},'AH',this.value)"></td>
+        <td style="text-align:center"><input type="number" value="${c.OH}" min="0" onchange="updateCourse(${c.id},'OH',this.value)"></td>
+        <td style="text-align:center"><strong class="nh-sum">${nh}</strong></td>
+        <td style="text-align:center"><strong>${cr}</strong></td>
+        <td style="text-align:center">
+          <select onchange="updateCourse(${c.id},'type',this.value)">
+            <option value="lec"${c.type==='lec'?' selected':''}>Lecture</option>
+            <option value="lab"${c.type==='lab'?' selected':''}>Lec+Lab</option>
+            <option value="prac"${c.type==='prac'?' selected':''}>Practical</option>
+            <option value="ind"${c.type==='ind'?' selected':''}>Industrial</option>
+            <option value="proj"${c.type==='proj'?' selected':''}>Project</option>
+          </select>
+        </td>
+        <td style="text-align:center">
+          <input type="checkbox" ${c.elective?'checked':''} onchange="updateCourse(${c.id},'elective',this.checked)" title="Mark as elective">
+          ${c.elective?'<span class="badge badge-gold" style="font-size:9px">E</span>':''}
+        </td>
+        <td style="text-align:center">
+          <button class="btn btn-red btn-xs" onclick="deleteCourse(${c.id})">✕</button>
+        </td>
+      </tr>`;
+    });
+
+    const totalStyle = nhOk ? '' : 'background:var(--red)!important;';
+    html += `<tr class="totals-row" style="${totalStyle}">
+      <td colspan="7">SEMESTER TOTAL (Core) — Target: 600 NH / 60 Credits</td>
+      <td style="text-align:center">${gNH} ${nhOk?'✓':'⚠'}</td>
+      <td style="text-align:center">${gCred} ${crOk?'✓':''}</td>
+      <td colspan="3"></td>
+    </tr>
+    </tbody></table>
+    <div style="padding:6px 12px; text-align:right;">
+      <button class="btn btn-teal btn-xs" onclick="addCourseTo(${g.year},'${g.sem}')">＋ Add to this semester</button>
+    </div>
+    </div>`;
+  });
+
+  area.innerHTML = html;
+
+  // Check how many semesters meet target
+  const groups2 = groupBySem();
+  const regSems = groups2.filter(g=>g.sem!=='R');
+  const okSems = regSems.filter(g => {
+    const nh = g.courses.filter(c=>!c.elective).reduce((s,c)=>s+getNH(c),0);
+    return Math.abs(nh - 600) <= 2;
+  });
+  const allOk2 = okSems.length === regSems.length;
+  const summaryEl = document.getElementById('total-summary');
+  if (summaryEl) {
+    summaryEl.innerHTML = `Total: <strong>${totalNH} NH | ${totalCred} Credits</strong> &nbsp;|&nbsp; Semesters at 600 NH: <span style="color:${allOk2?'var(--green)':'var(--red)'};font-weight:700">${okSems.length}/${regSems.length}</span> ${allOk2?'✅':'⚠️ Click "Enforce 600 NH"'}`;
+  }
+
+  // Update NH status banner
+  const banner = document.getElementById('nh-status-banner');
+  if (banner) {
+    if (!allOk2) {
+      const shortSems = regSems.filter(g=>{
+        const nh=g.courses.filter(c=>!c.elective).reduce((s,c)=>s+getNH(c),0);
+        return Math.abs(nh-600)>2;
+      }).map(g=>getSemLabel(g.year,g.sem)).join(', ');
+      banner.style.display='block';
+      banner.innerHTML=`<div class="alert alert-warn" style="display:flex;align-items:center;gap:10px;margin-bottom:0">
+        ⚠️ <strong>${regSems.length - okSems.length} semester(s) not at 600 NH/60 Credits:</strong> ${shortSems}
+        &nbsp;<button class="btn btn-navy btn-sm" onclick="autoBalanceNH()" style="white-space:nowrap">⚖️ Auto-Fix All Now</button>
+      </div>`;
+    } else {
+      banner.style.display='none';
+    }
+  }
+}
+
+
+function progContext() {
+  const p = getProg();
+  assignCodes();
+  const groups = groupBySem();
+  const courseList = groups.map(g => {
+    const semCourses = g.courses.map(c=>`  - ${c.code}: ${c.name} (${getNH(c)} NH, ${getCredits(c)} Credits${c.elective?' [Elective]':''})`).join('\n');
+    return `${getSemLabel(g.year,g.sem)}:\n${semCourses}`;
+  }).join('\n\n');
+  return `INSTITUTION: Kampala International University (KIU), Uganda
+PROGRAMME: ${p.name}
+AWARD: ${p.award}
+ABBREVIATION: ${p.abbr}
+SCHOOL: ${p.school}
+DEPARTMENT: ${p.dept}
+UHEQF LEVEL: Level ${p.level} (Bachelor's Degree)
+DURATION: ${p.years} years, ${p.years*2} semesters, Full-time
+MODE: ${p.mode}
+
+CURRICULUM STRUCTURE:
+${courseList}
+
+KEY STANDARDS:
+- 1 Academic Credit = 10 Notional Hours (NH)
+- NH = Directed Hours (DH) + Self-Study Hours (SH) + Assessment Hours (AH) + Other Hours (OH)
+- MANDATORY: Every regular semester MUST = exactly 600 NH = 60 Credits (enforced by the system)
+- UCC courses have FIXED NH that cannot change (UCC_ICF=100, UCC_ELS=100, UCC_CS=100, UCC_RM=100, UCC_CE=100, UCC_IN1=200, WRC=75, UCC_RR=100, UCC_IN2=200)
+- Programme-specific courses: SH adjusted to make semester total = 600 NH
+- Min graduation load: 3,600 NH / 360 Credits for 3-year Bachelor's
+- CBE approach: competency-based, student-centered, outcomes-aligned
+- NCHE Uganda compliance required`;
+}
+
+const SYSTEM_PROMPT = `You are a senior curriculum developer for Kampala International University (KIU), Uganda. You write formal, professional academic programme documents following KIU's Competency-Based Education (CBE) framework and NCHE Uganda standards. Write in formal academic English suitable for submission to the National Council for Higher Education (NCHE). Be specific, detailed and substantive. Avoid generic filler text.`;
+
+
+function sectionPrompt(key) {
+  const ctx = progContext();
+  const prompts = {
+    intro: `Write Section 1: Introduction for the programme document. Include:
+1.1 Background of the Institution (KIU's history, charter, campuses in Kampala and Bushenyi, AAU/IUCEA membership, founding in 2001)
+1.2 Vision (To become a premier institution of international repute)
+1.3 Mission (Respond to societal needs, research environment)
+1.4 Core Values (List 6-8 values with brief descriptions)
+1.5 Legal Status (Chartered by Government of Uganda)
+
+Make it 400-500 words. Write in flowing paragraphs, no bullet points for 1.1-1.3.
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    governance: `Write Section 2: Governance and Management for this programme document.
+Describe how the programme is governed under KIU's institutional framework including:
+- University Council/Governing Council
+- Senate/Academic Board  
+- Faculty/School Board of ${getProg().school}
+- Departmental Board of ${getProg().dept}
+- Quality Assurance Directorate
+- Programme Coordinator responsibilities
+- Student leadership interface
+
+Include a brief description of the organogram structure. ~250 words.
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    nameCode: `Write Section 3: Programme Name, Code and Duration for this programme document.
+Include:
+a) Programme Name and Award — state the full name, abbreviation, and UHEQF Level 7 classification
+b) Programme Code — explain the KIU coding format: ${getProg().level}[Year][Semester][Serial], e.g., ${getProg().prefix} ${getProg().level}1101 means Level ${getProg().level}, Year 1, Semester 1, Course 01
+c) Duration — ${getProg().years} academic years, ${getProg().years*2} regular semesters plus recess industrial training semesters
+d) Minimum Graduation Load — state total credits and NH, average per semester
+
+Make it precise and professional. ~300 words.
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    description: `Write Section 4: Programme Description for this programme document.
+Provide a comprehensive 300-400 word description covering:
+- Disciplinary focus and scope of Chemistry Technology
+- Key thematic areas covered across the three years
+- Teaching philosophy (CBE, student-centered, lab-intensive)
+- What graduates are prepared to do
+- What makes this programme distinctive (Uganda/East Africa context, industrial relevance)
+- Links to industry, research, and professional practice
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    development: `Write Section 5: Programme Development/Review Process.
+Describe (250-300 words):
+- When and why the programme was developed/reviewed
+- Needs assessment conducted (labour market surveys, industry consultations)
+- Benchmarking against national and international programmes
+- Stakeholders involved: industry experts, NCHE, academic staff, employers
+- Institutional approval process: Department → Faculty/School → Senate → Council
+- Quality assurance and curriculum validation steps
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    rationale: `Write Section 6: Programme Rationale/Justification (350-400 words).
+Justify the need for B.Sc.T. Chemistry at KIU by explaining:
+- Uganda's industrialization agenda and Vision 2040
+- Demand for chemistry graduates in industry, manufacturing, pharmaceuticals, agriculture
+- Skills gaps in Uganda and East Africa
+- Employment trends and professional shortages
+- Alignment with Uganda's National Development Plan
+- Contribution to innovation, research and community development
+- Institutional strategic fit
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    competences: `Write Section 7: Programme Competences.
+List and elaborate 4 categories of competences graduates will possess:
+a) Knowledge Competences (6 competences) — theoretical and conceptual mastery of chemistry
+b) Practical/Technical Competences (6 competences) — laboratory skills, instrumentation, safety
+c) Cognitive Competences (5 competences) — critical thinking, analytical reasoning, problem-solving
+d) Affective/Professional Competences (5 competences) — ethics, professional conduct, teamwork
+
+For each competence write one clear sentence using strong action verbs.
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    outcomes: `Write Section 8: Programme Learning Outcomes.
+Write 10-12 specific, measurable learning outcomes using action verbs aligned to Bloom's Taxonomy (apply, analyze, design, evaluate, demonstrate, synthesize, etc.).
+Cover knowledge, skills, and professional attitudes outcomes.
+Format: "Upon successful completion of the programme, the graduate will be able to:"
+Then numbered list of outcomes.
+
+Ensure they are SMART (Specific, Measurable, Achievable, Relevant, Time-bound).
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    targetGroup: `Write Section 9: Target Group (200 words).
+Describe the intended learners for this programme:
+- Primary target: A-level school leavers with science backgrounds
+- Secondary: Diploma holders seeking upgrading
+- Geographic scope: Uganda and East Africa
+- Career aspirations: chemistry industry, research, education, pharmaceuticals, manufacturing
+- Expected academic profile
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    admission: `Write Section 10: Programme Entry/Admission Requirements.
+State clearly (using bullet points and sub-sections):
+a) Minimum entry requirements — UACE with at least two principal passes in Chemistry + one of: Maths, Physics, Biology, Agriculture, Computer Science
+b) Mature entry — age 25+ with relevant work experience
+c) Diploma entry — Diploma in relevant science from recognized institution
+d) International students — equivalent qualifications
+e) Document requirements for application
+Use the admission info: ${getProg().admission}
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    humanRes: `Write Section 11: Human Resources — Academic, Administrative and Support Staff (300 words).
+Describe:
+- Minimum academic staff qualifications (PhD preferred, Master's minimum for lecturers)
+- Current staff profile summary (numbers, qualifications, designations)
+- Staff-student ratio targets
+- Staff development and continuous professional development policy
+- Administrative support structure
+- Laboratory technicians and support staff
+- Visiting/adjunct faculty arrangements
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    infrastructure: `Write Section 12: Physical Infrastructure and Learning Resources (250 words).
+Describe:
+- Teaching spaces: lecture rooms, tutorial rooms, labs (chemistry labs: analytical, organic, inorganic, physical)
+- Laboratory equipment: spectrometers, chromatography, titration apparatus, etc.
+- Library resources: books, e-resources, chemistry databases (SciFinder, Web of Science)
+- ICT resources: computers, internet, LMS (Moodle)
+- Safety equipment: fume hoods, protective gear, first aid
+- Industrial partnerships for field attachment
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    delivery: `Write Section 13: Modes/Strategies of Delivery (250 words).
+Describe the CBE delivery approach including:
+- Interactive lectures and guided learning
+- Laboratory practicals and demonstrations
+- Project-based learning (PBL)
+- Problem-based and case-based learning
+- Industrial training/field attachments
+- Tutorials and small group discussions
+- Guest lectures from industry practitioners
+- Blended learning (face-to-face + Moodle LMS)
+- Self-directed learning
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    assessment: `Write Section 14: Modes/Strategies of Assessment (300 words).
+Describe the CBE assessment framework:
+14.1 Formative Assessment (minimum 50%): continuous tests, practicals, assignments, lab reports, presentations, portfolios, reflective journals
+14.2 Summative Assessment (maximum 50%): end-of-semester exams, capstone/final year project, practical examinations
+14.3 Grading Scheme: 80-100% (A, Distinction), 70-79% (B, Credit), 60-69% (C, Merit), 50-59% (D, Pass), below 50% (F, Fail)
+Note: Formative and summative must be passed independently.
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    progression: `Write Section 15: Progression (200 words).
+Describe student progression policies:
+- Normal progression: completion of required credits per semester
+- Minimum GPA for progression (e.g., 2.0/5.0)
+- Probationary status conditions and time limits
+- Retake policy for failed courses
+- Deferred year provisions
+- Discontinuation criteria
+- Industrial training completion requirements
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    gradLoad: `Write Section 16: Minimum Graduation Load.
+State clearly:
+- Total Credits: 360 (minimum, from 6 regular semesters)
+- Total Notional Hours: 3,600 NH
+- Average per regular semester: 600 NH
+- Industrial training (recess semesters): additional ~200 NH each
+- Final Year Project requirements
+- Minimum pass mark for graduation
+
+Then provide the standard NCHE graduation load table and UHEQF levels table as described in the template.
+Write in professional prose followed by data tables (use plain text table format with | separators).
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    research: `Write Section 18: Research and Innovation (200 words).
+Specify how research is integrated:
+- Research methodology course (Year 2)
+- Final Year Research Project (Year 3, Semester 2)
+- Laboratory-based research
+- Industry-based problem solving projects
+- Undergraduate research conferences
+- Staff research mentorship
+- Links to KIU Research Directorate
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    community: `Write Section 19: Community Engagement (200 words).
+Describe how community engagement is embedded:
+- Industrial attachments and field placements
+- Community chemistry outreach programmes
+- Environmental analysis and monitoring services
+- School chemistry demonstration events
+- Partnerships with local industries and government agencies
+- Service learning projects
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    policies: `Write Section 20: Policies (250 words).
+State how the programme operates under institutional and NCHE policies:
+- Academic Regulations (examinations, assessments, grading)
+- Admissions Policy (entry requirements, international students)
+- Quality Assurance Policy (programme review every 3-5 years)
+- Research and Innovation Policy
+- Laboratory Safety Policy
+- Gender and Equity Policy
+- Disability Inclusion Policy
+- ICT Policy (Moodle LMS, e-learning)
+- Staff Development Policy
+Note how often each is reviewed.
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    financial: `Write Section 21: Financial Resources and Sustainability (200 words).
+Describe financial sustainability through:
+- Tuition and functional fees as primary revenue
+- KIU institutional budget allocations for labs and equipment
+- Research grants and industry partnerships
+- Equipment maintenance budget
+- Staff salaries and development allocation
+- Projected student enrolment and revenue projections
+- Cost efficiency measures
+
+PROGRAMME CONTEXT:
+${ctx}`,
+
+    welfare: `Write Section 22: Students Welfare (200 words).
+Describe student support services:
+- Sports facilities (on both campuses)
+- Health centre/clinic services
+- Student counselling and mental health services
+- Places of worship (multi-faith)
+- Student accommodation (halls of residence)
+- Student union and clubs (Chemistry Society)
+- Financial aid and scholarship schemes
+- Career guidance and job placement services
+- International student support
+
+PROGRAMME CONTEXT:
+${ctx}`,
+  };
+  return prompts[key] || `Write the section titled "${key}" for this KIU CBE programme document.\n\nPROGRAMME CONTEXT:\n${ctx}`;
+}
+
+// ══════════════════════════════════════════
+//  COURSE DETAIL PROMPT
+// ══════════════════════════════════════════
+
+
+function renderGenerateTab() {
+  // Populate WRC units badges
+  const wrcBadgesEl = document.getElementById('wrc-units-badges');
+  if (wrcBadgesEl && UNIVERSAL.WRC.units) {
+    wrcBadgesEl.innerHTML = UNIVERSAL.WRC.units.map(u =>
+      `<span class="badge badge-teal" style="font-size:10px;">${u.code}: ${u.name} (${u.contactHours}h)</span>`
+    ).join('');
+  }
+  assignCodes();
+  // Programme sections
+  let secHtml = '';
+  SECTIONS.forEach(s => {
+    const state = sectionContent[s.key];
+    const cls = state.done ? 'done' : '';
+    const dotCls = state.done ? 'done' : 'pending';
+    const dotIcon = state.done ? '✓' : '○';
+    secHtml += `<div class="sec-item ${cls}" id="sec-item-${s.key}">
+      <div class="sec-dot ${dotCls}" id="sec-dot-${s.key}">${dotIcon}</div>
+      <div class="sec-name">${s.num} ${s.title}</div>
+      <button class="btn btn-sm ${state.done?'btn-outline':'btn-teal'}" onclick="generateSection('${s.key}')" id="sec-btn-${s.key}">
+        ${state.done ? '↺ Redo' : 'Generate'}
+      </button>
+    </div>`;
+  });
+  document.getElementById('sections-list').innerHTML = secHtml;
+
+  // Course details
+  let courseHtml = '';
+  courses.forEach(c => {
+    const detail = courseDetails[c.code];
+    const done = detail?.done;
+    const cls = done ? 'done' : '';
+    courseHtml += `<div class="sec-item ${cls}" id="cdet-item-${c.id}">
+      <div class="sec-dot ${done?'done':'pending'}" id="cdet-dot-${c.id}">${done?'✓':'○'}</div>
+      <div class="sec-name" style="font-size:12px">
+        <span class="code-tag" style="font-size:10px">${c.code}</span>
+        &nbsp;${c.name}
+      </div>
+      <button class="btn btn-sm ${done?'btn-outline':'btn-teal'}" onclick="generateCourseDetail(${c.id})" id="cdet-btn-${c.id}">
+        ${done?'↺':'Gen'}
+      </button>
+    </div>`;
+  });
+  document.getElementById('courses-gen-list').innerHTML = courseHtml;
+  updateProgress();
+}
+
+
+function updateProgress() {
+  const total = SECTIONS.length + courses.length;
+  const done = SECTIONS.filter(s=>sectionContent[s.key].done).length
+             + courses.filter(c=>courseDetails[c.code]?.done).length;
+  const pct = Math.round(done/total*100);
+  const progEl = document.getElementById('overall-prog');
+  if (progEl) progEl.style.width = pct+'%';
+  const txtEl = document.getElementById('prog-text');
+  if (txtEl) txtEl.textContent = `${done} of ${total} sections generated (${pct}%)`;
+}
+
+
 // SEMESTER ENFORCEMENT ENGINE - 600 NH / 60 Credits per semester
 var SEM_TARGET_NH = 600;
 var STD_COURSE_NH = 100;

@@ -1769,12 +1769,12 @@ function textToWordXML(rawText) {
 
     // Column widths
     var visColCount = hdrCells.filter(function(_,i){ return !skipCols[i]; }).length;
-    var CW = isTopicTable ? 15100 : 9166; // landscape content width for topic table
+    var CW = isTopicTable ? 15500 : 14400; // landscape: 14400 for normal, 15500 for topic table
     var colW = visColCount > 0 ? Math.floor(CW / visColCount) : 800;
     var colWidths = hdrCells.map(function(_,i){ return skipCols[i] ? 0 : colW; }).filter(function(w){ return w > 0; });
 
     // Font size: small for wide tables
-    var cellSz = isTopicTable ? 14 : (isStrategyTable ? 18 : 18);
+    var cellSz = isTopicTable ? 14 : 18;  // 7pt for topic table, 9pt for others
     var NAVY = '0F2D4A', WHITE = 'FFFFFF';
 
     var rows = '';
@@ -1802,7 +1802,7 @@ function textToWordXML(rawText) {
       parts.push(mkTable(rows, CW, colWidths));
       // Return to portrait after
       parts.push(
-        '<w:p><w:pPr><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="1008" w:bottom="1080" w:left="1008"/></w:sectPr></w:pPr></w:p>'
+        '<w:p><w:pPr><w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr></w:pPr></w:p>'
       );
     } else {
       parts.push(mkTable(rows, CW, colWidths));
@@ -1980,7 +1980,7 @@ function buildDocxParts(p, bodyXML) {
   var contentTypes='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>';
   var rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>';
   var documentRels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>';
-  var document='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><w:body>'+bodyXML+'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="1008" w:bottom="1080" w:left="1008"/></w:sectPr></w:body></w:document>';
+  var document='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><w:body>'+bodyXML+'<w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr></w:body></w:document>';
   var numXmlInstances='';
   if(_docNumRegistry&&_docNumRegistry.length){
     _docNumRegistry.forEach(function(e){numXmlInstances+='<w:num w:numId="'+e.numId+'"><w:abstractNumId w:val="'+e.abstractId+'"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>';});
@@ -2043,8 +2043,8 @@ function buildCoverPage(p) {
     + '<w:right w:val="single" w:sz="24" w:space="24" w:color="' + GREEN + '"/>'
     + '</w:pgBorders>';
   var sectPr = '<w:sectPr>' + pageBorder
-    + '<w:pgSz w:w="11906" w:h="16838"/>'
-    + '<w:pgMar w:top="1440" w:right="1008" w:bottom="1440" w:left="1008"/>'
+    + '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>'
+    + '<w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/>'
     + '</w:sectPr>';
 
   var out = [];
@@ -2086,8 +2086,8 @@ function buildTOC() {
 // ── Build curriculum matrix table XML ─────────────────────────────────────────
 function buildCurriculumXML() {
   var NAVY = '0F2D4A', WHITE = 'FFFFFF';
-  var CW = 9166;
-  var COLS = [1500, 3200, 550, 550, 550, 550, 666, 600];
+  var CW = 14400;
+  var COLS = [2000, 5000, 800, 800, 800, 800, 900, 800];
   var HDRS = ['Code', 'Course Name', 'DH', 'SH', 'AH', 'OH', 'NH', 'Cr'];
   var out = '';
   var groups = groupBySem();
@@ -2138,7 +2138,7 @@ function buildCourseDetailXML(c, detailText) {
   out += h2(String(c.code||'') + '  |  ' + xes(c.name) + uLabel);
 
   // Meta table (matches preview course-meta-table)
-  var CW = 9166, mCols = [1500, 2733, 1500, 3433];
+  var CW = 14400, mCols = [2000, 5200, 2000, 5200];
   var typeLabel = c.type==='lab'?'Lecture + Lab':c.type==='prac'?'Practical':c.type==='ind'?'Internship':c.type==='proj'?'Research Project':'Lecture';
   var metaRows = '';
   var metaData = [

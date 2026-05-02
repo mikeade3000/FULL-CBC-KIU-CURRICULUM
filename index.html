@@ -3532,33 +3532,6 @@ async function autoFillFromRegistry() {
 // ── Enhanced extractAndFill: check conflicts on import ───────────────────────
 var _originalExtractAndFill = null; // set after extractAndFill is defined
 
-async function extractAndFillWithRegistry() {
-  // Run the original extraction
-  await extractAndFill();
-  // After extraction, check for conflicts
-  var p = getProg();
-  var conflictCount = 0;
-  for (var i = 0; i < courses.length; i++) {
-    var c = courses[i];
-    if (!c.code || getUniversalKey(c)) continue; // skip UCC
-    var conflicts = await checkCourseConflict(c, p.name, p.school, p.dept);
-    if (conflicts.length > 0) {
-      conflictCount++;
-      confirmCourseOwnership(c, conflicts, function(share) {
-        // share = true means reuse existing; false = keep as new
-        console.log('Course', c.code, share ? 'shared' : 'kept separate');
-      });
-    }
-  }
-  // Save to registry
-  var saved = await saveProgrammeCourseUnits();
-  if (saved > 0) toast('📚 ' + saved + ' courses saved to registry', 'info');
-  // Auto-fill details from registry
-  await autoFillFromRegistry();
-}
-
-
-// ── Consent & Disclaimer ─────────────────────────────────────────────────────
 function acceptConsent() {
   var el = document.getElementById('consent-overlay');
   if (el) el.style.display = 'none';
@@ -3580,6 +3553,201 @@ function insertDisclaimerBar() {
   bar.innerHTML = '&#9888; HUMAN-IN-THE-LOOP REQUIRED: All AI-generated content must be reviewed and verified by qualified academic staff before any official use. Developer: Dr. Michael Adelani Adewusi, KIU.';
   document.body.appendChild(bar);
 }
+
+
+// ══════════════════════════════════════════════════════════════════════
+//  FILE UPLOAD & SETUP HANDLERS
+// ══════════════════════════════════════════════════════════════════════
+
+var importText = '';
+
+// ── File upload (click to browse) ─────────────────────────────────────
+function handleFileUpload(input) {
+  var file = input.files[0];
+  if (file) processFile(file);
+}
+
+// ── Drag-and-drop ─────────────────────────────────────────────────────
+function handleDrop(event) {
+  event.preventDefault();
+  var dz = document.getElementById('drop-zone');
+  if (dz) dz.style.background = 'var(--gray-50)';
+  var file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+  if (file) processFile(file);
+}
+
+// ── Core file processor ───────────────────────────────────────────────
+async function processFile(file) {
+  var infoEl  = document.getElementById('import-file-info');
+  var nameEl  = document.getElementById('import-file-name');
+  var errEl   = document.getElementById('extract-error');
+  var textEl  = document.getElementById('import-text');
+  if (errEl) errEl.style.display = 'none';
+  var name = file.name;
+  var ext  = name.split('.').pop().toLowerCase();
+  try {
+    if (ext === 'docx' || ext === 'doc') {
+      if (typeof mammoth === 'undefined')
+        throw new Error('Mammoth.js not loaded. Please refresh the page or paste the programme text manually.');
+      var buf    = await file.arrayBuffer();
+      var result = await mammoth.extractRawText({ arrayBuffer: buf });
+      importText = result.value;
+      if (textEl) textEl.value = importText;
+      var words = importText.split(/\s+/).filter(Boolean).length;
+      var lines = importText.split('\n').length;
+      if (infoEl) {
+        infoEl.style.display = 'flex';
+        if (nameEl) nameEl.innerHTML =
+          '\ud83d\udcc4 Loaded: <strong>' + name + '</strong> &mdash; ' + words + ' words / ' + lines + ' lines extracted';
+      }
+      toast('\u2705 Word document loaded successfully!', 'success');
+    } else if (ext === 'txt' || ext === 'rtf') {
+      importText = await file.text();
+      if (textEl) textEl.value = importText;
+      var words = importText.split(/\s+/).filter(Boolean).length;
+      if (infoEl) {
+        infoEl.style.display = 'flex';
+        if (nameEl) nameEl.innerHTML = '\ud83d\udcc4 Loaded: <strong>' + name + '</strong> &mdash; ' + words + ' words';
+      }
+      toast('\u2705 Text file loaded!', 'success');
+    } else if (ext === 'pdf') {
+      throw new Error('PDF files are not directly supported. Please save as .docx or copy-paste the text.');
+    } else {
+      throw new Error('Unsupported file type: .' + ext + '. Use .docx, .doc, or .txt');
+    }
+  } catch(e) {
+    if (errEl) { errEl.textContent = '\u274c ' + e.message; errEl.style.display = 'block'; }
+    toast('\u274c ' + e.message, 'error');
+    console.error('processFile error:', e);
+  }
+}
+
+// ── Clear the upload area ──────────────────────────────────────────────
+function clearImport() {
+  importText = '';
+  var textEl = document.getElementById('import-text');
+  var infoEl = document.getElementById('import-file-info');
+  var errEl  = document.getElementById('extract-error');
+  var upload = document.getElementById('file-upload');
+  if (textEl) textEl.value = '';
+  if (infoEl) infoEl.style.display = 'none';
+  if (errEl)  errEl.style.display  = 'none';
+  if (upload) upload.value = '';
+  toast('Upload cleared', 'info');
+}
+
+// ── extractAndFill needs to use importText textarea ───────────────────
+// (overrides the extractAndFill that only uses getElementById)
+// This patched version properly reads importText OR the textarea
+async function extractAndFillWithRegistry() {
+  // Read from importText var OR the textarea
+  var rawText = importText || (document.getElementById('import-text') ? document.getElementById('import-text').value.trim() : '');
+  if (!rawText) { toast('Please upload a file or paste programme text first', 'error'); return; }
+  var btn = document.getElementById('extract-btn');
+  var statusEl = document.getElementById('extract-status');
+  var errEl    = document.getElementById('extract-error');
+  if (btn) { btn.disabled = true; btn.textContent = '\u23f3 Extracting...'; }
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Step 1/3 \u2014 Sending to AI...'; }
+  if (errEl) errEl.style.display = 'none';
+  try {
+    var prompt = 'You are a curriculum metadata extractor for Kampala International University (KIU), Uganda.\n'
+      + 'From the programme document text below, extract and return ONLY a valid JSON object with exactly these fields:\n'
+      + '{\n'
+      + '  "name": "full programme name",\n'
+      + '  "award": "Bachelor of Science etc.",\n'
+      + '  "abbr": "BScICH etc.",\n'
+      + '  "prefix": "ICH etc.",\n'
+      + '  "school": "School name",\n'
+      + '  "dept": "Department name",\n'
+      + '  "hod": "HOD name if found",\n'
+      + '  "level": 7,\n'
+      + '  "years": 3,\n'
+      + '  "mode": "Full-time",\n'
+      + '  "date": "Month Year",\n'
+      + '  "admission": "admission requirements summary",\n'
+      + '  "courses": [\n'
+      + '    {"name":"course name","prefix":"ICH","type":"lec","DH":45,"SH":35,"AH":10,"OH":10,"year":1,"sem":"1","elective":false}\n'
+      + '  ]\n'
+      + '}\n\n'
+      + 'Rules:\n'
+      + '- type must be one of: lec, lab, prac, ind, proj\n'
+      + '- For each course, DH+SH+AH+OH should total 100 (or 200 for internships)\n'
+      + '- Include ALL courses found in the document\n'
+      + '- Do NOT include UCC/WRC courses (those will be added automatically)\n'
+      + '- Return ONLY the JSON, no markdown, no explanation\n\n'
+      + 'DOCUMENT:\n' + rawText.slice(0, 12000);
+    if (statusEl) statusEl.textContent = 'Step 1/3 \u2014 AI is reading your document...';
+    var text = await callLlama(prompt, 'You extract structured data from academic documents. Return only valid JSON, no markdown fences, no explanation.', 3000);
+    if (statusEl) statusEl.textContent = 'Step 2/3 \u2014 Parsing extracted data...';
+    var json = text.replace(/```json\s?/g,'').replace(/```\s?/g,'').trim();
+    // Extract just the JSON object
+    var jsonStart = json.indexOf('{');
+    var jsonEnd   = json.lastIndexOf('}');
+    if (jsonStart >= 0 && jsonEnd > jsonStart) json = json.slice(jsonStart, jsonEnd+1);
+    var meta = JSON.parse(json);
+    // Populate setup fields
+    function sv(id, v) { var el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = String(v); }
+    sv('p-name', meta.name);    sv('p-award', meta.award);   sv('p-abbr', meta.abbr);
+    sv('p-prefix', meta.prefix); sv('p-school', meta.school); sv('p-dept', meta.dept);
+    sv('p-hod', meta.hod);      sv('p-level', String(meta.level || 7));
+    sv('p-years', String(meta.years || 3)); sv('p-mode', meta.mode); sv('p-date', meta.date);
+    if (meta.admission) sv('p-admission', meta.admission);
+    if (meta.courses && meta.courses.length) {
+      courses = meta.courses.map(function(c, i) {
+        return {
+          id: i+1, year: parseInt(c.year)||1, sem: String(c.sem||'1'),
+          prefix: String(c.prefix || meta.prefix || 'PRG'),
+          name: String(c.name || 'Course '+(i+1)),
+          type: c.type || 'lab',
+          DH: parseInt(c.DH)||40, SH: parseInt(c.SH)||30,
+          AH: parseInt(c.AH)||20, OH: parseInt(c.OH)||10,
+          elective: !!c.elective
+        };
+      });
+      nextId = courses.length + 1;
+    }
+    if (statusEl) statusEl.textContent = 'Step 3/3 \u2014 Building curriculum (enforcing 600 NH)...';
+    enforceSemesterTargets({ verbose: false });
+    assignCodes();
+    SECTIONS.forEach(function(s) { sectionContent[s.key] = { text: '', done: false }; });
+    courseDetails = {};
+    renderUniversalRegistry();
+    if (statusEl) statusEl.innerHTML = '\u2705 <strong>Complete!</strong> All fields populated from your document.';
+    toast('\u2705 Programme extracted and loaded!', 'success');
+    // Check registry for existing course details
+    setTimeout(function(){ autoFillFromRegistry().catch(function(){}); }, 500);
+    switchTab('curriculum');
+    // Save to registry
+    saveProgrammeCourseUnits().catch(function(){});
+  } catch(e) {
+    if (statusEl) statusEl.innerHTML = '\u274c Error: ' + e.message;
+    if (errEl) { errEl.textContent = '\u274c ' + e.message; errEl.style.display = 'block'; }
+    toast('\u274c Extraction failed: ' + e.message, 'error');
+    console.error('extractAndFill error:', e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '\ud83d\udd0d Extract & Auto-Fill All Fields'; }
+  }
+}
+
+// ── Admission level info (called when textarea changes) ───────────────
+function setAdmissionLevelInfo() {
+  // No-op: just keeps fields in sync when text changes
+}
+
+// ── Load a programme template ──────────────────────────────────────────
+function loadTemplate(type) {
+  var templates = {
+    'bsc': { name:'Bachelor of Science in [Discipline]', award:'Bachelor of Science', abbr:'BSc[X]', prefix:'[X]', years:3, level:7 },
+    'ba':  { name:'Bachelor of Arts in [Discipline]',    award:'Bachelor of Arts',    abbr:'BA[X]',  prefix:'[X]', years:3, level:7 },
+    'btech':{ name:'Bachelor of Technology in [Discipline]', award:'Bachelor of Technology', abbr:'BTech[X]', prefix:'[X]', years:4, level:7 },
+  };
+  var t = templates[type] || templates['bsc'];
+  function sv(id,v){ var el=document.getElementById(id); if(el) el.value=v; }
+  sv('p-name',t.name); sv('p-award',t.award); sv('p-abbr',t.abbr);
+  sv('p-prefix',t.prefix); sv('p-years',String(t.years)); sv('p-level',String(t.level));
+  toast('Template loaded — fill in the details', 'info');
+}
+
 
 function init() {
   setTimeout(insertDisclaimerBar, 600);

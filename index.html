@@ -3639,95 +3639,169 @@ function clearImport() {
 // ── extractAndFill needs to use importText textarea ───────────────────
 // (overrides the extractAndFill that only uses getElementById)
 // This patched version properly reads importText OR the textarea
+
+// ══════════════════════════════════════════════════════════════════════
+//  SMART 2-PASS EXTRACTION
+//  Pass 1: Extract programme metadata (name, school, dept, etc.)
+//  Pass 2: Extract ALL courses (smart text chunking for large docs)
+// ══════════════════════════════════════════════════════════════════════
+
+function smartChunkForCourses(text) {
+  // Find the section of the document most likely to contain course listings
+  // Look for patterns like: Year 1, Semester, course codes, credit units
+  var lower = text.toLowerCase();
+  var markers = [
+    'year 1', 'year one', 'first year', 'semester 1', 'semester one',
+    'curriculum structure', 'course structure', 'programme structure',
+    'course unit', 'credit unit', 'contact hours', 'notional hours',
+  ];
+  var bestStart = -1;
+  for (var i = 0; i < markers.length; i++) {
+    var idx = lower.indexOf(markers[i]);
+    if (idx > 0 && (bestStart < 0 || idx < bestStart)) bestStart = idx;
+  }
+  // Start 200 chars before the first marker (to catch any header)
+  var start = Math.max(0, bestStart > 0 ? bestStart - 200 : 0);
+  // Take up to 28000 chars from that point
+  return text.slice(start, start + 28000);
+}
+
+function normalizeSem(sem) {
+  if (!sem) return '1';
+  var s = String(sem).toLowerCase().trim();
+  if (s === '1' || s === 'i'   || s === 'one'    || s === 'first')  return '1';
+  if (s === '2' || s === 'ii'  || s === 'two'    || s === 'second') return '2';
+  if (s === 'r' || s === 'summer' || s === 'recess' || s === 'vacation') return 'R';
+  return '1'; // default
+}
+
 async function extractAndFillWithRegistry() {
-  // Read from importText var OR the textarea
   var rawText = importText || (document.getElementById('import-text') ? document.getElementById('import-text').value.trim() : '');
   if (!rawText) { toast('Please upload a file or paste programme text first', 'error'); return; }
-  var btn = document.getElementById('extract-btn');
+
+  var btn      = document.getElementById('extract-btn');
   var statusEl = document.getElementById('extract-status');
   var errEl    = document.getElementById('extract-error');
-  if (btn) { btn.disabled = true; btn.textContent = '\u23f3 Extracting...'; }
-  if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Step 1/3 \u2014 Sending to AI...'; }
-  if (errEl) errEl.style.display = 'none';
+  if (btn)      { btn.disabled = true; btn.textContent = '\u23f3 Extracting...'; }
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.innerHTML = 'Step 1/3 \u2014 Reading document metadata...'; }
+  if (errEl)    errEl.style.display = 'none';
+
   try {
-    var prompt = 'You are a curriculum metadata extractor for Kampala International University (KIU), Uganda.\n'
-      + 'From the programme document text below, extract and return ONLY a valid JSON object with exactly these fields:\n'
-      + '{\n'
-      + '  "name": "full programme name",\n'
-      + '  "award": "Bachelor of Science etc.",\n'
-      + '  "abbr": "BScICH etc.",\n'
-      + '  "prefix": "ICH etc.",\n'
-      + '  "school": "School name",\n'
-      + '  "dept": "Department name",\n'
-      + '  "hod": "HOD name if found",\n'
-      + '  "level": 7,\n'
-      + '  "years": 3,\n'
-      + '  "mode": "Full-time",\n'
-      + '  "date": "Month Year",\n'
-      + '  "admission": "admission requirements summary",\n'
-      + '  "courses": [\n'
-      + '    {"name":"course name","prefix":"ICH","type":"lec","DH":45,"SH":35,"AH":10,"OH":10,"year":1,"sem":"1","elective":false}\n'
-      + '  ]\n'
-      + '}\n\n'
-      + 'Rules:\n'
-      + '- type must be one of: lec, lab, prac, ind, proj\n'
-      + '- For each course, DH+SH+AH+OH should total 100 (or 200 for internships)\n'
-      + '- Include ALL courses found in the document\n'
-      + '- Do NOT include UCC/WRC courses (those will be added automatically)\n'
-      + '- Return ONLY the JSON, no markdown, no explanation\n\n'
-      + 'DOCUMENT:\n' + rawText.slice(0, 12000);
-    if (statusEl) statusEl.textContent = 'Step 1/3 \u2014 AI is reading your document...';
-    var text = await callLlama(prompt, 'You extract structured data from academic documents. Return only valid JSON, no markdown fences, no explanation.', 3000);
-    if (statusEl) statusEl.textContent = 'Step 2/3 \u2014 Parsing extracted data...';
-    var json = text.replace(/```json\s?/g,'').replace(/```\s?/g,'').trim();
-    // Extract just the JSON object
-    var jsonStart = json.indexOf('{');
-    var jsonEnd   = json.lastIndexOf('}');
-    if (jsonStart >= 0 && jsonEnd > jsonStart) json = json.slice(jsonStart, jsonEnd+1);
-    var meta = JSON.parse(json);
-    // Populate setup fields
-    function sv(id, v) { var el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = String(v); }
-    sv('p-name', meta.name);    sv('p-award', meta.award);   sv('p-abbr', meta.abbr);
-    sv('p-prefix', meta.prefix); sv('p-school', meta.school); sv('p-dept', meta.dept);
-    sv('p-hod', meta.hod);      sv('p-level', String(meta.level || 7));
-    sv('p-years', String(meta.years || 3)); sv('p-mode', meta.mode); sv('p-date', meta.date);
+    // ── PASS 1: Extract programme metadata (use first 6000 chars — metadata is usually at the start) ──
+    var metaText = rawText.slice(0, 6000);
+    var metaPrompt = 'Extract ONLY this JSON from the programme document. Return ONLY valid JSON, no other text:\n'
+      + '{"name":"","award":"","abbr":"","prefix":"","school":"","dept":"","hod":"","level":7,"years":3,"mode":"Full-time","date":"","admission":""}\n\n'
+      + 'Rules: level is always 7 for Bachelor degree. years is number of study years (usually 3 or 4). '
+      + 'prefix is 2-4 letter programme code (e.g. SE, ICH, CS). abbr is the degree abbreviation (e.g. BSE, BScICH).\n\n'
+      + 'DOCUMENT (first part):\n' + metaText;
+
+    var metaText2 = await callLlama(metaPrompt, 'Return only valid JSON objects. No markdown, no explanation.', 800);
+    var meta = {};
+    try {
+      var mj = metaText2.replace(/```[\s\S]*?```/g,'').trim();
+      var ms = mj.indexOf('{'), me = mj.lastIndexOf('}');
+      if (ms >= 0 && me > ms) meta = JSON.parse(mj.slice(ms, me+1));
+    } catch(e) { meta = {}; }
+
+    // Populate metadata fields immediately
+    function sv(id, v) { var el=document.getElementById(id); if(el && v!==undefined && v!==null && String(v).trim()) el.value=String(v); }
+    sv('p-name',    meta.name);   sv('p-award',  meta.award);  sv('p-abbr', meta.abbr);
+    sv('p-prefix',  meta.prefix); sv('p-school', meta.school); sv('p-dept', meta.dept);
+    sv('p-hod',     meta.hod);    sv('p-level',  String(meta.level||7));
+    sv('p-years',   String(meta.years||3)); sv('p-mode', meta.mode); sv('p-date', meta.date);
     if (meta.admission) sv('p-admission', meta.admission);
-    if (meta.courses && meta.courses.length) {
-      courses = meta.courses.map(function(c, i) {
-        return {
-          id: i+1, year: parseInt(c.year)||1, sem: String(c.sem||'1'),
-          prefix: String(c.prefix || meta.prefix || 'PRG'),
-          name: String(c.name || 'Course '+(i+1)),
-          type: c.type || 'lab',
-          DH: parseInt(c.DH)||40, SH: parseInt(c.SH)||30,
-          AH: parseInt(c.AH)||20, OH: parseInt(c.OH)||10,
-          elective: !!c.elective
-        };
-      });
-      nextId = courses.length + 1;
-    }
-    if (statusEl) statusEl.textContent = 'Step 3/3 \u2014 Building curriculum (enforcing 600 NH)...';
+
+    if (statusEl) statusEl.innerHTML = 'Step 2/3 \u2014 Extracting all course units (this may take 30 seconds)...';
+
+    // ── PASS 2: Extract ALL courses — smart chunking for large documents ──
+    var courseChunk = smartChunkForCourses(rawText);
+    var pfx = (meta.prefix || 'PRG').toUpperCase();
+
+    var coursesPrompt = 'Extract ALL programme-specific course units from the text below.\n'
+      + 'Return ONLY a valid JSON array of course objects. No markdown, no explanation.\n\n'
+      + 'Each course must have EXACTLY these fields:\n'
+      + '{"name":"","prefix":"' + pfx + '","type":"lec","DH":45,"SH":35,"AH":10,"OH":10,"year":1,"sem":"1","elective":false}\n\n'
+      + 'STRICT RULES:\n'
+      + '- Extract EVERY course unit listed in the document — there should be 30-50 courses\n'
+      + '- "prefix" is the programme prefix (e.g. ' + pfx + ') for programme courses. Use "UCC" for university common courses but DO include them\n'
+      + '- "type": use "lec" for lectures, "lab" for lab/practical, "ind" for internship/industrial training, "proj" for project/dissertation\n'
+      + '- "DH" = Directed/Contact hours, "SH" = Self-directed hours, "AH" = Applied/Practical hours, "OH" = Other/Assessed hours\n'
+      + '- If exact NH breakdown not given, use: DH=45,SH=35,AH=10,OH=10 for 100NH courses; DH=0,SH=30,AH=10,OH=160 for internships\n'
+      + '- "year": integer 1, 2, 3, or 4\n'
+      + '- "sem": ONLY use "1", "2", or "R" (for recess/vacation). Never use "Summer", "i", "II", etc.\n'
+      + '- "elective": true only if document says optional/elective\n'
+      + '- Include ALL courses from Year 1 through final year\n'
+      + '- Return ONLY the JSON array starting with [ and ending with ]\n\n'
+      + 'DOCUMENT:\n' + courseChunk;
+
+    var coursesText = await callLlama(coursesPrompt, 'Extract structured course data. Return ONLY a valid JSON array, nothing else.', 4000);
+
+    if (statusEl) statusEl.innerHTML = 'Step 3/3 \u2014 Building curriculum structure...';
+
+    // Parse courses JSON
+    var cj = coursesText.replace(/```json\s?/g,'').replace(/```\s?/g,'').trim();
+    var cs = cj.indexOf('['), ce = cj.lastIndexOf(']');
+    if (cs < 0 || ce <= cs) throw new Error('No course array found in AI response. Try again or paste the text manually.');
+    var rawCourses = JSON.parse(cj.slice(cs, ce+1));
+
+    if (!rawCourses || rawCourses.length < 2)
+      throw new Error('Only ' + (rawCourses||[]).length + ' courses extracted — document may be poorly formatted. Check text and try again.');
+
+    // Clean and normalize courses
+    courses = rawCourses.map(function(c, i) {
+      var yr  = parseInt(c.year) || 1;
+      var sm  = normalizeSem(c.sem);
+      var dh  = parseInt(c.DH)  || (sm==='R'||c.type==='ind'?0:40);
+      var sh  = parseInt(c.SH)  || (sm==='R'||c.type==='ind'?30:30);
+      var ah  = parseInt(c.AH)  || (sm==='R'||c.type==='ind'?10:20);
+      var oh  = parseInt(c.OH)  || (sm==='R'||c.type==='ind'?160:10);
+      return {
+        id:       i + 1,
+        year:     yr,
+        sem:      sm,
+        prefix:   String(c.prefix || pfx).toUpperCase().trim() || pfx,
+        name:     String(c.name   || 'Course ' + (i+1)).trim(),
+        type:     ['lec','lab','prac','ind','proj'].indexOf(c.type) >= 0 ? c.type : 'lec',
+        DH: dh, SH: sh, AH: ah, OH: oh,
+        elective: !!c.elective,
+      };
+    }).filter(function(c){ return c.name.length > 1; });
+
+    nextId = courses.length + 1;
+
+    // Enforce 600 NH per semester and assign codes
     enforceSemesterTargets({ verbose: false });
     assignCodes();
+
+    // Reset section/course detail content
     SECTIONS.forEach(function(s) { sectionContent[s.key] = { text: '', done: false }; });
     courseDetails = {};
+
     renderUniversalRegistry();
-    if (statusEl) statusEl.innerHTML = '\u2705 <strong>Complete!</strong> All fields populated from your document.';
-    toast('\u2705 Programme extracted and loaded!', 'success');
-    // Check registry for existing course details
-    setTimeout(function(){ autoFillFromRegistry().catch(function(){}); }, 500);
-    switchTab('curriculum');
-    // Save to registry
+    if (statusEl) statusEl.innerHTML =
+      '\u2705 <strong>Complete!</strong> '
+      + courses.length + ' courses extracted. All fields populated from "'
+      + (meta.name || 'your document') + '".';
+
+    toast('\u2705 ' + courses.length + ' courses loaded from "' + (meta.abbr || 'programme') + '"!', 'success');
+
+    // Auto-fill from registry & save
+    setTimeout(function(){ autoFillFromRegistry().catch(function(){}); }, 800);
     saveProgrammeCourseUnits().catch(function(){});
+    switchTab('curriculum');
+
   } catch(e) {
-    if (statusEl) statusEl.innerHTML = '\u274c Error: ' + e.message;
-    if (errEl) { errEl.textContent = '\u274c ' + e.message; errEl.style.display = 'block'; }
-    toast('\u274c Extraction failed: ' + e.message, 'error');
-    console.error('extractAndFill error:', e);
+    var msg = e.message || String(e);
+    if (statusEl) statusEl.innerHTML = '\u274c Error: ' + msg;
+    if (errEl)    { errEl.textContent = '\u274c ' + msg; errEl.style.display = 'block'; }
+    toast('\u274c Extraction failed: ' + msg, 'error');
+    console.error('extractAndFillWithRegistry error:', e);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '\ud83d\udd0d Extract & Auto-Fill All Fields'; }
   }
 }
+
+
 
 // ── Admission level info (called when textarea changes) ───────────────
 function setAdmissionLevelInfo() {

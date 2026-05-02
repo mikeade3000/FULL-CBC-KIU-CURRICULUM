@@ -441,11 +441,11 @@ body { user-select: none; -webkit-user-select: none; }
       <div style="background:#fff0f0;border:2px solid #c00;border-radius:6px;padding:14px 16px;margin-bottom:16px;">
         <div style="color:#c00;font-weight:700;font-size:13px;margin-bottom:6px;">&#9888;&#65039; CRITICAL DISCLAIMER &mdash; PLEASE READ CAREFULLY</div>
         <p style="color:#c00;font-size:12px;margin:0;line-height:1.6">
-          This tool is use to generate academic programme content.
-          <strong>All Generated content MUST be reviewed, verified and approved by qualified academic staff
+          This tool uses Artificial Intelligence (AI) to generate academic programme content.
+          <strong>All AI-generated content MUST be reviewed, verified and approved by qualified academic staff
           before use in any official document, NCHE submission, or academic purpose.</strong>
           This application incorporates Human-in-the-Loop (HITL) principles &mdash; generated content is a
-          starting point only. KIU accepts no responsibility for errors in Generated content that has not
+          starting point only. KIU accepts no responsibility for errors in AI-generated content that has not
           been reviewed. <strong>Always check everything generated.</strong>
         </p>
       </div>
@@ -458,7 +458,7 @@ body { user-select: none; -webkit-user-select: none; }
         <strong>By proceeding, you confirm that:</strong>
         <ol style="margin:8px 0 0 16px;padding:0">
           <li>You are an authorised KIU staff member, lecturer, or approved user.</li>
-          <li>All Generated content will be reviewed by qualified academic staff before official use.</li>
+          <li>All AI-generated content will be reviewed by qualified academic staff before official use.</li>
           <li>You accept responsibility for verifying the accuracy of all generated content.</li>
           <li>This tool is for use at Kampala International University only.</li>
         </ol>
@@ -471,7 +471,7 @@ body { user-select: none; -webkit-user-select: none; }
         &#10003; I Understand and Agree to Proceed
       </button>
       <p style="text-align:center;font-size:10px;color:#999;margin:10px 0 0">
-        &#169; KIU 2026 &mdash; Developed by Dr. Michael Adelani Adewusi for Kampala International University
+        &#169; KIU 2025 &mdash; Developed by Dr. Michael Adelani Adewusi for Kampala International University
       </p>
     </div>
   </div>
@@ -523,7 +523,7 @@ body { user-select: none; -webkit-user-select: none; }
     </div>
     <div id="import-body" class="card-body">
       <div class="alert alert-info">
-        📌 Upload or paste your existing programme document. The tool reads it, extracts all metadata, restructures courses into CBE format with proper KIU codes, calculates Notional Hours, and auto-fills every field — ready to generate.
+        📌 Upload or paste your existing programme document. The AI reads it, extracts all metadata, restructures courses into CBE format with proper KIU codes, calculates Notional Hours, and auto-fills every field — ready to generate.
       </div>
       <div id="drop-zone" onclick="document.getElementById('file-upload').click()"
         style="border:2.5px dashed var(--teal2);border-radius:8px;padding:28px;text-align:center;cursor:pointer;background:var(--gray-50);transition:all .2s;margin-bottom:14px;"
@@ -538,7 +538,7 @@ body { user-select: none; -webkit-user-select: none; }
       <div style="text-align:center;font-size:12px;color:var(--gray-500);margin:10px 0;">— OR paste programme text below —</div>
       <div class="fld">
         <label>Paste Programme Content (curriculum tables, course lists, objectives, requirements — everything)</label>
-        <textarea id="import-text" rows="10" placeholder="Paste your full programme document here including course codes, names, credit units, contact hours, programme objectives, admission requirements, duration etc. The tool will intelligently extract and restructure it all." style="font-size:12px;font-family:var(--font-mono);line-height:1.6;"></textarea>
+        <textarea id="import-text" rows="10" placeholder="Paste your full programme document here including course codes, names, credit units, contact hours, programme objectives, admission requirements, duration etc. The AI will intelligently extract and restructure it all." style="font-size:12px;font-family:var(--font-mono);line-height:1.6;"></textarea>
       </div>
       <div id="import-file-info" style="display:none;" class="alert alert-success">
         <span id="import-file-name"></span>
@@ -1340,7 +1340,7 @@ function updateApiStatus() {
 // Set this to your Render deployment URL (where OPENROUTER_API_KEY is stored as env var)
 var BACKEND_URL = (typeof window !== 'undefined' && window.KIU_BACKEND_URL)
   ? window.KIU_BACKEND_URL
-  : 'https://kiu-cbe-api.onrender.com';
+  : 'https://full-cbc-kiu-curriculum.onrender.com';
 
 async function callLlama(prompt, system, maxTokens) {
   maxTokens = maxTokens || 2000;
@@ -2563,7 +2563,7 @@ async function buildUCCDoc(){
 
 var _db = null;
 var REGISTRY_BACKEND = (typeof window !== 'undefined' && window.KIU_BACKEND_URL)
-  ? window.KIU_BACKEND_URL : 'https://kiu-cbe-api.onrender.com';
+  ? window.KIU_BACKEND_URL : 'https://full-cbc-kiu-curriculum.onrender.com';
 
 // ── Open IndexedDB ────────────────────────────────────────────────────────────
 function openRegistryDB() {
@@ -2817,7 +2817,7 @@ function insertDisclaimerBar() {
   var bar = document.createElement('div');
   bar.id = 'hitl-bar';
   bar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#b00;color:#fff;text-align:center;padding:6px 12px;font-size:11px;font-weight:700;z-index:9997;letter-spacing:0.2px';
-  bar.innerHTML = '&#9888; HUMAN-IN-THE-LOOP REQUIRED: All Generated content must be reviewed and verified by qualified academic staff before any official use. Developer: Dr. Michael Adelani Adewusi, KIU.';
+  bar.innerHTML = '&#9888; HUMAN-IN-THE-LOOP REQUIRED: All AI-generated content must be reviewed and verified by qualified academic staff before any official use. Developer: Dr. Michael Adelani Adewusi, KIU.';
   document.body.appendChild(bar);
 }
 

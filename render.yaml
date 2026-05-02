@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: kiu-cbe-api
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: DATA_DIR
+        value: ./data
+    disk:
+      name: kiu-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1

@@ -859,55 +859,39 @@ body { user-select: none; -webkit-user-select: none; }
 <script>
 
 // ── Source Code Protection ────────────────────────────────────────────────────
-(function() {
-  // Disable right-click context menu
-  document.addEventListener('contextmenu', function(e) {
-    e.preventDefault();
-    return false;
-  });
-
-  // Disable common DevTools keyboard shortcuts
-  document.addEventListener('keydown', function(e) {
-    // F12
-    if (e.key === 'F12' || e.keyCode === 123) { e.preventDefault(); return false; }
-    // Ctrl+Shift+I / Cmd+Option+I
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'I' || e.key === 'i')) { e.preventDefault(); return false; }
-    // Ctrl+Shift+J
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'J' || e.key === 'j')) { e.preventDefault(); return false; }
-    // Ctrl+Shift+C
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'C' || e.key === 'c')) { e.preventDefault(); return false; }
-    // Ctrl+U (view source)
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'U' || e.key === 'u')) { e.preventDefault(); return false; }
-    // Ctrl+S (save page)
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'S' || e.key === 's') && !e.target.matches('input,textarea,select')) { e.preventDefault(); return false; }
-  });
-
-  // DevTools detection (size change heuristic)
-  var devtoolsOpen = false;
-  var threshold = 160;
-  setInterval(function() {
-    var widthDiff = window.outerWidth - window.innerWidth > threshold;
-    var heightDiff = window.outerHeight - window.innerHeight > threshold;
-    if (widthDiff || heightDiff) {
-      if (!devtoolsOpen) {
-        devtoolsOpen = true;
-        console.clear();
-        document.body.style.filter = 'blur(6px)';
-        var msg = document.createElement('div');
-        msg.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#0F2D4A;color:white;padding:24px 36px;border-radius:8px;z-index:999999;text-align:center;font-family:Arial;font-weight:700;font-size:15px';
-        msg.innerHTML = 'This application is protected.<br>Unauthorised access to source code is prohibited.<br><small>&#169; KIU 2025 &mdash; Dr. Michael Adelani Adewusi</small>';
-        document.body.appendChild(msg);
+document.addEventListener('contextmenu', function(e){ e.preventDefault(); return false; });
+document.addEventListener('keydown', function(e){
+  var ctrl = e.ctrlKey || e.metaKey;
+  if (e.keyCode===123) { e.preventDefault(); return false; }
+  if (ctrl && e.shiftKey && 'IJCijc'.indexOf(e.key)>=0) { e.preventDefault(); return false; }
+  if (ctrl && 'Uu'.indexOf(e.key)>=0) { e.preventDefault(); return false; }
+  if (ctrl && 'Ss'.indexOf(e.key)>=0 && !e.target.matches('input,textarea,select')) { e.preventDefault(); return false; }
+});
+(function(){
+  var devOpen=false, thresh=160;
+  setInterval(function(){
+    var w=window.outerWidth-window.innerWidth>thresh;
+    var h=window.outerHeight-window.innerHeight>thresh;
+    if(w||h){
+      if(!devOpen){
+        devOpen=true;
+        document.body.style.filter='blur(6px)';
+        var m=document.createElement('div');
+        m.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#0F2D4A;color:white;padding:24px 36px;border-radius:8px;z-index:999999;text-align:center;font-family:Arial;font-weight:700;font-size:15px';
+        m.textContent='This application is protected. Unauthorised access to source code is prohibited. KIU 2025 - Dr. Michael Adelani Adewusi';
+        document.body.appendChild(m);
       }
     } else {
-      if (devtoolsOpen) {
-        devtoolsOpen = false;
-        document.body.style.filter = '';
-        var el = document.querySelector('[style*="translate(-50%,-50%)"]');
-        if (el) el.remove();
+      if(devOpen){
+        devOpen=false;
+        document.body.style.filter='';
+        var els=document.querySelectorAll('[style*="translate(-50%,-50%)"]');
+        for(var i=0;i<els.length;i++) els[i].remove();
       }
     }
-  }, 1000);
+  },1000);
 })();
+
 
 // ══════════════════════════════════════════
 //  GLOBAL UTILITY FUNCTIONS (defined first)
@@ -1849,6 +1833,121 @@ async function saveDocx(xmlParts, filename, successMsg) {
 }
 
 
+// ══════════════════════════════════════════
+//  WORD XML UTILITY FUNCTIONS
+// ══════════════════════════════════════════
+
+function mkPara(text, opts) {
+  opts = opts || {};
+  var jc    = opts.align ? '<w:jc w:val="'+opts.align+'"/>' : '<w:jc w:val="both"/>';
+  var sp2   = '<w:spacing w:before="'+(opts.before||0)+'" w:after="'+(opts.after!==undefined?opts.after:120)+'"/>';
+  var ind   = opts.indent ? '<w:ind w:left="'+opts.indent+'" w:hanging="'+(opts.hanging||0)+'"/>' : '';
+  var style = opts.style  ? '<w:pStyle w:val="'+opts.style+'"/>' : '';
+  var num   = opts.numId  ? '<w:numPr><w:ilvl w:val="'+(opts.ilvl||0)+'"/><w:numId w:val="'+opts.numId+'"/></w:numPr>' : '';
+  var body  = typeof text === 'string' ? mkRuns(text, opts) : (text || '');
+  return '<w:p><w:pPr>'+style+num+jc+sp2+ind+'</w:pPr>'+body+'</w:p>';
+}
+
+function mkCell(content, opts) {
+  opts = opts || {};
+  var w   = opts.w ? '<w:tcW w:w="'+opts.w+'" w:type="dxa"/>' : '<w:tcW w:w="1800" w:type="dxa"/>';
+  var span= opts.span ? '<w:gridSpan w:val="'+opts.span+'"/>' : '';
+  var bc  = opts.bc || 'CCCCCC';
+  var bdr = '<w:tcBorders><w:top w:val="single" w:sz="4" w:color="'+bc+'"/><w:bottom w:val="single" w:sz="4" w:color="'+bc+'"/><w:left w:val="single" w:sz="4" w:color="'+bc+'"/><w:right w:val="single" w:sz="4" w:color="'+bc+'"/></w:tcBorders>';
+  var shd = opts.fill ? '<w:shd w:val="clear" w:color="auto" w:fill="'+opts.fill+'"/>' : '';
+  var mar = '<w:tcMar><w:top w:w="80" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar>';
+  var cellBody = typeof content === 'string' ? mkPara(content, Object.assign({}, opts, {before:0, after:0, indent:0})) : content;
+  return '<w:tc><w:tcPr>'+w+span+bdr+shd+mar+'</w:tcPr>'+cellBody+'</w:tc>';
+}
+
+function mkRow(cells, opts) {
+  opts = opts || {};
+  var hdr = opts.header ? '<w:tblHeader/>' : '';
+  return '<w:tr><w:trPr>'+hdr+'</w:trPr>'+cells+'</w:tr>';
+}
+
+function mkTable(rows, totalW, colWidths) {
+  var cols = (colWidths||[]).map(function(w){ return '<w:gridCol w:w="'+w+'"/>'; }).join('');
+  return '<w:tbl><w:tblPr><w:tblW w:w="'+(totalW||9166)+'" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>'+cols+'</w:tblGrid>'+rows+'</w:tbl>';
+}
+
+function h1(t, opts) { return mkPara(t, Object.assign({}, opts||{}, {style:'KH1', align:'left', before:280, after:100})); }
+function h2(t, opts) { return mkPara(t, Object.assign({}, opts||{}, {style:'KH2', align:'left', before:200, after:80})); }
+function h3(t, opts) { return mkPara(t, Object.assign({}, opts||{}, {style:'KH3', align:'left', before:160, after:60})); }
+function sp(n) { n=n||1; return Array(n).fill('<w:p><w:pPr><w:spacing w:after="60"/></w:pPr></w:p>').join(''); }
+
+function resetDocNumRegistry() { _docNumRegistry=[]; _docNumCounter=10; }
+function newNumId(abstractId) {
+  var id = _docNumCounter++;
+  _docNumRegistry.push({numId:id, abstractId:abstractId});
+  return String(id);
+}
+
+function removeDuplicateHeading(text, sectionNum, sectionTitle) {
+  if (!text) return text;
+  var lines = text.split('\n'), cleaned = [], skipped = false;
+  for (var i=0;i<lines.length;i++) {
+    var t = lines[i].trim();
+    if (!t) { cleaned.push(lines[i]); continue; }
+    if (!skipped) {
+      var bare = t.replace(/^#+\s*/,'').replace(/\*\*/g,'').toLowerCase().trim();
+      var titleLower = sectionTitle.toLowerCase().replace(/[^a-z0-9 ]/g,'');
+      var bareCleaned = bare.replace(/^section\s+/,'').replace(/:/g,'').replace(/[^a-z0-9 ]/g,'');
+      if (bareCleaned.indexOf(titleLower.slice(0,20))!==-1 ||
+          (sectionNum && bare.indexOf(sectionNum.replace(/[^0-9.]/g,''))===0 && bare.indexOf(titleLower.slice(0,10))!==-1)) {
+        skipped=true; continue;
+      }
+      skipped=true;
+    }
+    cleaned.push(lines[i]);
+  }
+  return cleaned.join('\n');
+}
+
+function removeCourseHeading(text, courseName) {
+  if (!text) return text;
+  var lines = text.split('\n'), cleaned = [], skipped = false;
+  for (var i=0;i<lines.length;i++) {
+    var t = lines[i].trim();
+    if (!t) { cleaned.push(lines[i]); continue; }
+    if (!skipped) {
+      var bare = t.replace(/^#+\s*/,'').replace(/\*\*/g,'').toLowerCase().trim();
+      var nameLower = (courseName||'').toLowerCase().replace(/[^a-z0-9 ]/g,'');
+      if (bare.length>5 && nameLower.length>5 && bare.indexOf(nameLower.slice(0,15))!==-1) {
+        skipped=true; continue;
+      }
+      skipped=true;
+    }
+    cleaned.push(lines[i]);
+  }
+  return cleaned.join('\n');
+}
+
+function buildDocxParts(p, bodyXML) {
+  var now = new Date().toISOString();
+  var TF = '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/>';
+  var contentTypes='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>';
+  var rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>';
+  var documentRels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>';
+  var document='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><w:body>'+bodyXML+'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="1008" w:bottom="1080" w:left="1008"/></w:sectPr></w:body></w:document>';
+  var numXmlInstances='';
+  if(_docNumRegistry&&_docNumRegistry.length){
+    _docNumRegistry.forEach(function(e){numXmlInstances+='<w:num w:numId="'+e.numId+'"><w:abstractNumId w:val="'+e.abstractId+'"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>';});
+  }
+  var numbering='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#x2022;"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#x25E6;"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="1080" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="2"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1)"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num>'+numXmlInstances+'</w:numbering>';
+  var styles='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr>'+TF+'<w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120"/><w:jc w:val="both"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style><w:style w:type="paragraph" w:styleId="KH1"><w:name w:val="KIU Heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="280" w:after="100"/><w:jc w:val="left"/></w:pPr><w:rPr>'+TF+'<w:b/><w:bCs/><w:sz w:val="30"/><w:szCs w:val="30"/><w:color w:val="0F2D4A"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="KH2"><w:name w:val="KIU Heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="80"/><w:jc w:val="left"/></w:pPr><w:rPr>'+TF+'<w:b/><w:bCs/><w:sz w:val="26"/><w:szCs w:val="26"/><w:color w:val="117A7A"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="KH3"><w:name w:val="KIU Heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="160" w:after="60"/><w:jc w:val="left"/></w:pPr><w:rPr>'+TF+'<w:b/><w:bCs/><w:sz w:val="24"/><w:szCs w:val="24"/><w:color w:val="333333"/></w:rPr></w:style><w:style w:type="character" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/></w:style></w:styles>';
+  var settings='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>';
+  var fontTable='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:font w:name="Times New Roman"><w:panose1 w:val="02020603050405020304"/><w:charset w:val="00"/><w:family w:val="Roman"/><w:pitch w:val="variable"/></w:font></w:fonts>';
+  var core='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>'+xe(stripMd(p.name||''))+'</dc:title><dc:creator>KIU CBE Generator</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">'+now+'</dcterms:created></cp:coreProperties>';
+  var app='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>KIU CBE Programme Generator</Application></Properties>';
+  return {contentTypes:contentTypes, rels:rels, documentRels:documentRels, document:document, styles:styles, numbering:numbering, settings:settings, fontTable:fontTable, core:core, app:app};
+}
+
+// Registry vars for list numbering restart
+var _docNumRegistry = [];
+var _docNumCounter  = 10;
+
+
 function buildCoverPage(p) {
   var NAVY = '0F2D4A', TEAL = '117A7A', GREEN = '1A7A4A';
   var pageBorder = '<w:pgBorders w:offsetFrom="page">'
@@ -2772,6 +2871,276 @@ function updateProgress() {
   if (progEl) progEl.style.width = pct+'%';
   const txtEl = document.getElementById('prog-text');
   if (txtEl) txtEl.textContent = `${done} of ${total} sections generated (${pct}%)`;
+}
+
+
+// ══════════════════════════════════════════
+//  PROGRAMME STORAGE (Local)
+// ══════════════════════════════════════════
+var STORAGE_KEY = 'kiu_cbe_programmes_v2';
+
+function getAllProgrammes() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch(e) { return []; }
+}
+function saveProgrammes(progs) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(progs)); } catch(e) {}
+}
+function saveCurrentProgramme() {
+  var p = getProg();
+  assignCodes();
+  var snap = {
+    id: Date.now(), savedAt: new Date().toISOString(), meta: p,
+    courses: JSON.parse(JSON.stringify(courses)),
+    sectionContent: JSON.parse(JSON.stringify(sectionContent)),
+    courseDetails:  JSON.parse(JSON.stringify(courseDetails)),
+  };
+  var progs = getAllProgrammes();
+  var idx = progs.findIndex(function(x){ return x.meta && x.meta.name === p.name; });
+  if (idx >= 0) progs[idx] = snap; else progs.push(snap);
+  saveProgrammes(progs);
+  renderProgrammesList();
+  saveProgrammeCourseUnits().then(function(n){
+    toast('\u2705 "' + p.name + '" saved! (' + n + ' units in registry)', 'success');
+  }).catch(function(){ toast('\u2705 "' + p.name + '" saved!', 'success'); });
+}
+function loadProgramme(id) {
+  var progs = getAllProgrammes();
+  var prog  = progs.find(function(p){ return p.id === id; });
+  if (!prog) return;
+  var m = prog.meta;
+  function sv(elId, val){ var el=document.getElementById(elId); if(el&&val!==undefined) el.value=val; }
+  sv('p-name',m.name); sv('p-award',m.award); sv('p-abbr',m.abbr);
+  sv('p-prefix',m.prefix); sv('p-school',m.school); sv('p-dept',m.dept);
+  sv('p-hod',m.hod); sv('p-level',String(m.level||7)); sv('p-years',String(m.years||3));
+  sv('p-mode',m.mode); sv('p-date',m.date);
+  courses = prog.courses || [];
+  nextId  = Math.max.apply(null, courses.map(function(c){ return c.id||0; }).concat([0])) + 1;
+  SECTIONS.forEach(function(s){ sectionContent[s.key] = (prog.sectionContent && prog.sectionContent[s.key]) || {text:'',done:false}; });
+  if (prog.courseDetails) Object.assign(courseDetails, prog.courseDetails);
+  enforceSemesterTargets({verbose:false});
+  assignCodes();
+  renderUniversalRegistry();
+  toast('\u2705 "' + m.name + '" loaded!', 'success');
+  switchTab('curriculum');
+}
+function deleteProgramme(id) {
+  var progs = getAllProgrammes();
+  var prog  = progs.find(function(p){ return p.id === id; });
+  if (!prog) return;
+  if (!confirm('Delete "' + (prog.meta&&prog.meta.name||'this programme') + '"?')) return;
+  saveProgrammes(progs.filter(function(p){ return p.id !== id; }));
+  renderProgrammesList();
+  toast('Programme deleted','info');
+}
+function renderProgrammesList() {
+  var el = document.getElementById('programmes-list');
+  if (!el) return;
+  var progs = getAllProgrammes();
+  if (!progs.length) {
+    el.innerHTML = '<p style="color:var(--gray-500);font-size:13px;font-style:italic;">No programmes saved yet.</p>';
+    return;
+  }
+  el.innerHTML = progs.map(function(p) {
+    var date    = new Date(p.savedAt).toLocaleDateString('en-UG',{day:'2-digit',month:'short',year:'numeric'});
+    var secDone = SECTIONS.filter(function(s){ return p.sectionContent&&p.sectionContent[s.key]&&p.sectionContent[s.key].done; }).length;
+    var cDone   = (p.courses||[]).filter(function(c){ return p.courseDetails&&p.courseDetails[c.code]&&p.courseDetails[c.code].done; }).length;
+    return '<div style="border:1.5px solid var(--gray-200);border-radius:6px;padding:12px 14px;margin-bottom:8px;background:white;display:flex;align-items:center;gap:12px;">'
+      + '<div style="flex:1"><div style="font-weight:700;color:var(--navy);font-size:13px">' + (p.meta&&p.meta.name||'Unnamed') + '</div>'
+      + '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' + (p.meta&&p.meta.abbr||'') + ' \u00b7 ' + (p.courses||[]).length + ' courses \u00b7 ' + secDone + '/' + SECTIONS.length + ' sections \u00b7 Saved ' + date + '</div></div>'
+      + '<div style="display:flex;gap:6px">'
+      + '<button class="btn btn-teal btn-xs" onclick="loadProgramme(' + p.id + ')">Load</button>'
+      + '<button class="btn btn-gold btn-xs" onclick="downloadWordDocFor(' + p.id + ')">\ud83d\udcc4 Word</button>'
+      + '<button class="btn btn-red btn-xs" onclick="deleteProgramme(' + p.id + ')">\u2715</button>'
+      + '</div></div>';
+  }).join('');
+}
+function exportAllProgrammes() {
+  var progs = getAllProgrammes();
+  if (!progs.length) { toast('No programmes saved yet','error'); return; }
+  var blob = new Blob([JSON.stringify(progs, null, 2)], {type:'application/json'});
+  var a = document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='KIU_Programmes_'+new Date().toISOString().slice(0,10)+'.json'; a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },5000);
+  toast('Exported','success');
+}
+function importProgrammes(input) {
+  var file=input.files[0]; if(!file) return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try {
+      var progs=JSON.parse(e.target.result);
+      if(!Array.isArray(progs)) throw new Error('Invalid format');
+      var existing=getAllProgrammes();
+      progs.forEach(function(p){ var i=existing.findIndex(function(x){return x.id===p.id;}); if(i>=0) existing[i]=p; else existing.push(p); });
+      saveProgrammes(existing); renderProgrammesList();
+      toast('\u2705 '+progs.length+' programme(s) imported!','success');
+    } catch(e) { toast('\u274c '+e.message,'error'); }
+  };
+  reader.readAsText(file); input.value='';
+}
+function downloadWordDocFor(progId) {
+  var progs=getAllProgrammes();
+  var prog=progs.find(function(p){return p.id===progId;});
+  if(!prog)return;
+  if(typeof JSZip==='undefined'){toast('JSZip not loaded','error');return;}
+  buildWordDoc(prog.meta,prog.courses||[],prog.sectionContent||{},prog.courseDetails||{}).then(function(doc){
+    var fname=((prog.meta&&prog.meta.abbr)||'Programme').replace(/[^a-zA-Z0-9]/g,'_')+'_CBE_Programme.docx';
+    saveDocx(doc,fname,'\u2705 Downloaded!');
+  }).catch(function(e){toast('\u274c '+e.message,'error');});
+}
+
+// ── Download triggers ──────────────────────────────────────────────────────────
+async function downloadWordDoc() {
+  if(typeof JSZip==='undefined'){toast('JSZip not loaded — reload page','error');return;}
+  var spins=['word-spin','word-spin2'];
+  spins.forEach(function(id){var el=document.getElementById(id);if(el)el.style.display='inline-block';});
+  try {
+    assignCodes();
+    var doc=await buildWordDoc(getProg(),courses,sectionContent,courseDetails);
+    var p=getProg();
+    var fname=((p.abbr||p.name||'Programme').replace(/[^a-zA-Z0-9]/g,'_'))+'_CBE_Programme.docx';
+    saveDocx(doc,fname,'\u2705 Word document downloaded!');
+  } catch(e){toast('\u274c '+e.message,'error');console.error(e);}
+  finally{spins.forEach(function(id){var el=document.getElementById(id);if(el)el.style.display='none';});}
+}
+async function downloadAllCourseUnits() {
+  if(typeof JSZip==='undefined'){toast('JSZip not loaded','error');return;}
+  var btn=document.getElementById('units-spin');if(btn)btn.style.display='inline-block';
+  try {
+    assignCodes();
+    var doc=await buildCourseUnitsDoc(getProg(),courses,courseDetails);
+    var p=getProg();
+    var fname=((p.abbr||'Programme').replace(/[^a-zA-Z0-9]/g,'_'))+'_Course_Units.docx';
+    saveDocx(doc,fname,'\u2705 Course Units downloaded!');
+  } catch(e){toast('\u274c '+e.message,'error');console.error(e);}
+  finally{if(btn)btn.style.display='none';}
+}
+async function downloadUCCCourses() {
+  if(typeof JSZip==='undefined'){toast('JSZip not loaded','error');return;}
+  try{
+    var doc=await buildUCCDoc();
+    saveDocx(doc,'KIU_University_Common_Courses.docx','\u2705 UCC downloaded!');
+  }catch(e){toast('\u274c '+e.message,'error');}
+}
+
+// ── insertUCC & copyDocText ────────────────────────────────────────────────────
+function insertUCC(key) {
+  var def=UNIVERSAL[key]; if(!def){toast('UCC not found','error');return;}
+  if(courses.some(function(c){return getUniversalKey(c)===key;})){toast('Already in programme','info');return;}
+  courses.push({id:nextId++,year:def.year||1,sem:def.sem||'1',prefix:def.prefix,name:def.name,
+    type:def.type||'lec',DH:def.DH||0,SH:def.SH||0,AH:def.AH||0,OH:def.OH||0,elective:false});
+  courses.sort(function(a,b){
+    if(a.year!==b.year)return a.year-b.year;
+    var so={'1':1,'2':2,'R':3};
+    return (so[a.sem]||9)-(so[b.sem]||9);
+  });
+  assignCodes(); renderUniversalRegistry();
+  toast('\u2705 "'+def.name+'" added!','success');
+}
+function copyDocText() {
+  var el=document.getElementById('preview-wrap');
+  if(!el){toast('No preview content','error');return;}
+  var text=el.innerText||el.textContent||'';
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(text).then(function(){toast('Copied!','success');}).catch(function(){toast('Copy failed','error');});
+  } else {
+    var ta=document.createElement('textarea');ta.value=text;
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');toast('Copied!','success');}catch(e){toast('Copy failed','error');}
+    document.body.removeChild(ta);
+  }
+}
+
+// ── extractAndFill ─────────────────────────────────────────────────────────────
+async function extractAndFill() {
+  var rawText = document.getElementById('import-text') ? document.getElementById('import-text').value.trim() : '';
+  if (!rawText) { toast('Please upload a file or paste programme text first','error'); return; }
+  var btn = document.getElementById('extract-btn');
+  if(btn){btn.disabled=true;btn.textContent='\u23f3 Extracting...';}
+  function setStatus(msg,pct){ var el=document.getElementById('extract-status');if(el){el.style.display='block';el.innerHTML=msg;} }
+  setStatus('Step 1/3 \u2014 Sending to AI...',10);
+  try {
+    var prompt = 'You are a curriculum metadata extractor. Given the following programme document text, extract and return ONLY a JSON object with these fields:\n{"name":"", "award":"", "abbr":"", "prefix":"", "school":"", "dept":"", "hod":"", "level":7, "years":3, "mode":"Full-time", "date":"", "admission":"", "courses":[{"name":"","prefix":"","type":"lec","DH":45,"SH":35,"AH":10,"OH":10,"year":1,"sem":"1","elective":false}]}\n\nReturn ONLY the JSON, no explanation.\n\nDOCUMENT:\n' + rawText.slice(0, 12000);
+    var text = await callLlama(prompt, 'You extract structured data from academic documents and return only valid JSON.', 3000);
+    setStatus('Step 2/3 \u2014 Parsing data...', 60);
+    var json = text.replace(/```json|```/g,'').trim();
+    var meta = JSON.parse(json);
+    function sv(id,v){var el=document.getElementById(id);if(el&&v!==undefined)el.value=v;}
+    sv('p-name',meta.name);sv('p-award',meta.award);sv('p-abbr',meta.abbr);
+    sv('p-prefix',meta.prefix);sv('p-school',meta.school);sv('p-dept',meta.dept);
+    sv('p-hod',meta.hod);sv('p-level',String(meta.level||7));sv('p-years',String(meta.years||3));
+    sv('p-mode',meta.mode);sv('p-date',meta.date);
+    if(meta.admission) sv('p-admission',meta.admission);
+    if(meta.courses&&meta.courses.length){
+      courses = meta.courses.map(function(c,i){
+        return {id:i+1,year:parseInt(c.year)||1,sem:String(c.sem||'1'),
+          prefix:String(c.prefix||meta.prefix||'PRG'),name:String(c.name||'Course '+(i+1)),
+          type:c.type||'lab',DH:parseInt(c.DH)||40,SH:parseInt(c.SH)||30,
+          AH:parseInt(c.AH)||20,OH:parseInt(c.OH)||10,elective:!!c.elective};
+      });
+      nextId = courses.length + 1;
+    }
+    setStatus('Step 3/3 \u2014 Enforcing 600 NH...', 85);
+    enforceSemesterTargets({verbose:false});
+    assignCodes();
+    setStatus('\u2705 Complete! All fields populated.', 100);
+    SECTIONS.forEach(function(s){ sectionContent[s.key]={text:'',done:false}; });
+    courseDetails = {};
+    updateApiStatus();
+    renderUniversalRegistry();
+    toast('\u2705 Programme extracted and loaded!','success');
+    switchTab('curriculum');
+  } catch(e) {
+    setStatus('\u274c Error: '+e.message, 0);
+    toast('\u274c Extraction failed: '+e.message,'error');
+    console.error(e);
+  } finally {
+    if(btn){btn.disabled=false;btn.textContent='\ud83d\udd0d Extract & Auto-Fill All Fields';}
+  }
+}
+
+// ── renderUniversalRegistry ────────────────────────────────────────────────────
+function renderUniversalRegistry() {
+  var el = document.getElementById('universal-registry-list');
+  if (!el) return;
+  var p = getProg(), lev = p.level || '7';
+  var presentKeys = new Set(courses.map(function(c){ return getUniversalKey(c); }).filter(Boolean));
+  var UCC_ORDER = ['UCC_ICF','UCC_ELS','UCC_CS','UCC_RM','UCC_CE','UCC_IN1','WRC','UCC_IN2','UCC_RR','UCC_IN3','UCC_IN4','UCC_IN5'];
+  var html = '<div class="alert alert-info" style="margin-bottom:10px;font-size:12px">'
+    + '\ud83d\udd12 These ' + UCC_ORDER.length + ' UCC/WRC courses are <strong>fixed institution-wide</strong>. '
+    + 'Use <strong>+ Add</strong> to insert any missing course into the curriculum.</div>'
+    + '<table class="ctable" style="font-size:11.5px"><thead><tr>'
+    + '<th style="width:130px">Code</th><th>Course Name</th><th class="center">Yr</th>'
+    + '<th class="center">Sem</th><th class="center">DH</th><th class="center">SH</th>'
+    + '<th class="center">AH</th><th class="center">OH</th>'
+    + '<th class="center" style="color:var(--gold2)">NH</th><th class="center">Cr</th>'
+    + '<th class="center">Status</th></tr></thead><tbody>';
+  UCC_ORDER.forEach(function(key, idx) {
+    var def = UNIVERSAL[key]; if (!def) return;
+    var yr = def.year||1, sm = def.sem||'1', smNum = sm==='R'?'3':sm;
+    var code = def.prefix + ' ' + lev + yr + smNum + String(idx+1).padStart(2,'0');
+    var nh = (def.DH||0)+(def.SH||0)+(def.AH||0)+(def.OH||0);
+    var cr = key==='WRC'?'5 (NCHE)':Math.round(nh/10);
+    var isWRC = key==='WRC';
+    var inProg = presentKeys.has(key);
+    var rowBg = isWRC?'#fffbf0':'#f0fafa';
+    html += '<tr style="background:'+rowBg+'">'
+      + '<td><span class="code-tag" style="font-size:10px">'+code+'</span>&nbsp;'
+      + '<span class="badge badge-teal" style="font-size:8px">UCC</span></td>'
+      + '<td style="font-weight:600;color:var(--navy)">'+def.name+'</td>'
+      + '<td style="text-align:center">'+yr+'</td><td style="text-align:center">'+sm+'</td>'
+      + '<td style="text-align:center">'+def.DH+'</td><td style="text-align:center">'+def.SH+'</td>'
+      + '<td style="text-align:center">'+def.AH+'</td><td style="text-align:center">'+def.OH+'</td>'
+      + '<td style="text-align:center;font-weight:700;color:var(--teal)">'+nh+'</td>'
+      + '<td style="text-align:center;font-weight:700">'+cr+'</td>'
+      + '<td style="text-align:center">'
+      + (inProg
+        ? '<span style="background:var(--green);color:white;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700">&#10003; Present</span>'
+        : '<button class="btn btn-teal btn-xs" onclick="insertUCC(\''+key+'\')" style="width:100%">+ Add</button>')
+      + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
 }
 
 

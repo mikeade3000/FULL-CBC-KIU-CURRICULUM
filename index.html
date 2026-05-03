@@ -2181,6 +2181,14 @@ function buildCourseDetailXML(c, detailText) {
 // ── Build the full Word document ──────────────────────────────────────────────
 async function buildWordDoc(p, coursesArr, secContent, cDetails) {
   resetDocNumRegistry();
+
+  // Temporarily swap globals so all sub-functions use the correct programme data
+  var _origCourses = courses;
+  var _origCourseDetails = courseDetails;
+  if (coursesArr && coursesArr.length) {
+    courses = coursesArr;
+    courseDetails = cDetails || {};
+  }
   assignCodes();
   var groups = groupBySem();
   var body = '';
@@ -2261,7 +2269,14 @@ async function buildWordDoc(p, coursesArr, secContent, cDetails) {
     });
   });
 
-  return buildDocxParts(p, body);
+  var result = buildDocxParts(p, body);
+
+  // Restore original globals
+  courses = _origCourses;
+  courseDetails = _origCourseDetails;
+  assignCodes();
+
+  return result;
 }
 
 

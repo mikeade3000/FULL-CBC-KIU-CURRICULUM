@@ -504,6 +504,9 @@ body { user-select: none; -webkit-user-select: none; }
     <div class="tab" onclick="switchTab('programmes')" id="tab-programmes">
       <span class="tab-icon">🗂️</span>My Programmes
     </div>
+    <div class="tab" onclick="switchTab('audit')" id="tab-audit">
+      <span class="tab-icon">🏛️</span>Registry Audit
+    </div>
   </div>
 </div>
 
@@ -849,6 +852,34 @@ body { user-select: none; -webkit-user-select: none; }
           <button class="btn btn-navy btn-sm" onclick="downloadUCCCourses()" style="width:100%">Download .docx</button>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+
+<div class="pane" id="pane-audit">
+  <!-- Registry Audit Header -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-hd teal">🏛️ KIU Institutional Course Registry Audit</div>
+    <div class="card-body">
+      <p style="font-size:12px;color:var(--gray-600);margin:0 0 10px">
+        Identifies courses that appear in multiple programmes with inconsistent codes, NH values, or tier classifications.
+        Use this to resolve cross-programme duplications and enforce the Four-Tier classification.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-teal" onclick="runRegistryAudit()">🔍 Run Full Audit</button>
+        <button class="btn btn-gold" onclick="runRegistryAudit('cross')">⚠️ Cross-School Only</button>
+        <button class="btn btn-navy btn-sm" onclick="exportAuditReport()">📥 Export Audit Report</button>
+        <span id="audit-status" style="font-size:11px;color:var(--gray-500);align-self:center;margin-left:8px"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audit Results -->
+  <div id="audit-results">
+    <div style="text-align:center;padding:40px;color:var(--gray-400)">
+      <div style="font-size:36px;margin-bottom:8px">🔍</div>
+      <div style="font-size:14px">Click <strong>Run Full Audit</strong> to scan the KIU course registry for duplications and inconsistencies.</div>
     </div>
   </div>
 </div>
@@ -2344,8 +2375,8 @@ function refreshCodes() { assignCodes(); renderCurriculum(); }
 function updateCourse(id, field, value) {
   var c = courses.find(function(x){return x.id===id;});
   if (!c) return;
-  if (c.borrowed && c.locked && ['DH','SH','AH','OH','prefix','code'].indexOf(field)>=0) {
-    toast('\ud83d\udd12 Locked \u2014 Detach first to edit NH or code', 'error'); return;
+  if ((c.borrowed && c.locked || c.locked_ucc) && ['DH','SH','AH','OH','prefix','code','year','sem'].indexOf(field)>=0) {
+    toast('\ud83d\udd12 ' + (c.locked_ucc ? 'UCC course \u2014 NH values are fixed institution-wide' : 'Locked \u2014 Detach first to edit'), 'error'); return;
   }
   if (['DH','SH','AH','OH'].indexOf(field)>=0) value = parseInt(value)||0;
   if (field === 'elective') value = !!value;
@@ -3003,7 +3034,9 @@ function getAllProgrammes() {
 function saveProgrammes(progs) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(progs)); } catch(e) {}
 }
-function saveCurrentProgramme() {
+async function saveCurrentProgramme() {
+  var auditOk = await auditBeforeSave();
+  if (auditOk === false) return;
   var p = getProg();
   assignCodes();
   var snap = {
@@ -4632,6 +4665,199 @@ function loadTemplate(type) {
   sv('p-prefix',t.prefix); sv('p-years',String(t.years)); sv('p-level',String(t.level));
   toast('Template loaded — fill in the details', 'info');
 }
+
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  REGISTRY AUDIT SYSTEM
+// ══════════════════════════════════════════════════════════════════════════════
+
+var _auditData = null;
+
+async function runRegistryAudit(filter) {
+  var el = document.getElementById('audit-results');
+  var st = document.getElementById('audit-status');
+  if (!el) return;
+
+  el.innerHTML = '<div style="text-align:center;padding:30px"><span class="spin" style="display:inline-block;width:24px;height:24px;border:3px solid var(--teal);border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite"></span><div style="margin-top:10px;font-size:13px;color:var(--gray-500)">Scanning KIU registry...</div></div>';
+  if (st) st.textContent = 'Fetching data...';
+
+  try {
+    var url = REGISTRY_BACKEND + '/api/audit' + (filter ? '?filter='+filter : '');
+    var resp = await fetch(url);
+    if (!resp.ok) throw new Error('Server error ' + resp.status);
+    var data = await resp.json();
+    _auditData = data;
+
+    if (st) st.textContent = 'Registry: ' + data.registrySize + ' courses | ' + data.total + ' conflicts found';
+
+    if (!data.conflicts || data.conflicts.length === 0) {
+      el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--green)">'
+        + '<div style="font-size:36px;margin-bottom:8px">✅</div>'
+        + '<div style="font-size:14px;font-weight:700">No conflicts found!</div>'
+        + '<div style="font-size:12px;color:var(--gray-500);margin-top:6px">The KIU course registry is clean. All ' + data.registrySize + ' courses are consistent across programmes.</div>'
+        + '</div>';
+      return;
+    }
+
+    // Build conflict table
+    var html = '<div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">';
+    html += '<span style="background:#c00;color:white;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700">🔴 High: ' + data.high + '</span>';
+    html += '<span style="background:#c85a00;color:white;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700">🟠 Medium: ' + data.medium + '</span>';
+    html += '<span style="background:#6B21A8;color:white;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700">🟣 Low: ' + data.low + '</span>';
+    html += '<span style="color:var(--gray-500);font-size:11px;align-self:center">Total registry: ' + data.registrySize + ' course entries</span>';
+    html += '</div>';
+
+    data.conflicts.forEach(function(conflict, ci) {
+      var sevColor = conflict.severity==='high'?'#c00':conflict.severity==='medium'?'#c85a00':'#6B21A8';
+      var sevLabel = conflict.severity==='high'?'🔴 HIGH':conflict.severity==='medium'?'🟠 MEDIUM':'🟣 LOW';
+      var issues = [];
+      if (conflict.hasCodeConflict) issues.push('Different codes: ' + conflict.codes.join(', '));
+      if (conflict.hasNHConflict)   issues.push('Different NH: ' + conflict.nhs.join(', ') + ' NH');
+      if (conflict.hasTierConflict) issues.push('Different tiers: T' + conflict.tiers.join(', T'));
+      if (conflict.isCrossSchool)   issues.push('⚠️ Cross-school: ' + conflict.schools.join(' vs '));
+
+      html += '<div style="border:1.5px solid ' + sevColor + ';border-radius:8px;margin-bottom:10px;overflow:hidden">';
+      html += '<div style="background:' + sevColor + ';color:white;padding:8px 14px;display:flex;align-items:center;justify-content:space-between">';
+      html += '<div style="font-weight:700;font-size:13px">' + esc(conflict.name) + '</div>';
+      html += '<span style="background:rgba(255,255,255,0.2);padding:2px 8px;border-radius:10px;font-size:10px">' + sevLabel + '</span>';
+      html += '</div>';
+      html += '<div style="padding:10px 14px;background:white">';
+
+      // Issues list
+      if (issues.length) {
+        html += '<div style="font-size:11px;margin-bottom:8px">';
+        issues.forEach(function(iss) {
+          html += '<div style="color:' + sevColor + ';margin-bottom:2px">⚠ ' + esc(iss) + '</div>';
+        });
+        html += '</div>';
+      }
+
+      // Per-programme details table
+      html += '<table style="width:100%;font-size:11px;border-collapse:collapse;margin-bottom:8px">';
+      html += '<tr style="background:#f0f4f8"><th style="padding:4px 8px;text-align:left">Programme</th><th style="padding:4px 8px;text-align:left">School</th><th style="padding:4px 8px">Code</th><th style="padding:4px 8px">DH</th><th style="padding:4px 8px">SH</th><th style="padding:4px 8px">AH</th><th style="padding:4px 8px">OH</th><th style="padding:4px 8px">NH</th><th style="padding:4px 8px">Tier</th></tr>';
+      conflict.entries.forEach(function(e) {
+        var nh = (e.DH||0)+(e.SH||0)+(e.AH||0)+(e.OH||0);
+        var tier = TIERS[e.tier||4];
+        html += '<tr style="border-bottom:1px solid #eee">';
+        html += '<td style="padding:4px 8px;font-weight:600">' + esc(e.programme||'?') + '</td>';
+        html += '<td style="padding:4px 8px;color:var(--gray-500)">' + esc(e.school||'?') + '</td>';
+        html += '<td style="padding:4px 8px;text-align:center"><span class="code-tag" style="font-size:9px">' + esc(e.code||'N/A') + '</span></td>';
+        html += '<td style="padding:4px 8px;text-align:center">' + (e.DH||0) + '</td>';
+        html += '<td style="padding:4px 8px;text-align:center">' + (e.SH||0) + '</td>';
+        html += '<td style="padding:4px 8px;text-align:center">' + (e.AH||0) + '</td>';
+        html += '<td style="padding:4px 8px;text-align:center">' + (e.OH||0) + '</td>';
+        html += '<td style="padding:4px 8px;text-align:center;font-weight:700;color:var(--teal)">' + nh + '</td>';
+        html += '<td style="padding:4px 8px;text-align:center"><span style="background:' + (tier?tier.color:'#374151') + ';color:white;padding:1px 5px;border-radius:8px;font-size:9px;font-weight:700">' + (tier?tier.label:'T4') + '</span></td>';
+        html += '</tr>';
+      });
+      html += '</table>';
+
+      // Resolution buttons
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+      conflict.entries.forEach(function(e, ei) {
+        var nh = (e.DH||0)+(e.SH||0)+(e.AH||0)+(e.OH||0);
+        html += '<button class="btn btn-sm" onclick="resolveConflict(' + JSON.stringify(conflict.nameKey) + ',' + JSON.stringify(e.code||'') + ',' + (e.DH||0) + ',' + (e.SH||0) + ',' + (e.AH||0) + ',' + (e.OH||0) + ',' + (e.tier||4) + ')" '
+          + 'style="font-size:10px;background:#0F2D4A;color:white" title="Set this as the canonical version">'
+          + '✓ Use ' + esc(e.programme||'?') + ' version (' + esc(e.code||'?') + ', ' + nh + ' NH)'
+          + '</button>';
+      });
+      html += '<button class="btn btn-sm btn-outline" onclick="ignoreConflict(' + ci + ')" style="font-size:10px">Ignore</button>';
+      html += '</div>';
+      html += '</div></div>';
+    });
+
+    el.innerHTML = html;
+
+  } catch(e) {
+    el.innerHTML = '<div class="alert alert-error"><strong>Audit failed:</strong> ' + e.message + '<br><small>Make sure the Render backend is running.</small></div>';
+    if (st) st.textContent = 'Error: ' + e.message;
+    console.error('Audit error:', e);
+  }
+}
+
+async function resolveConflict(nameKey, canonicalCode, dh, sh, ah, oh, tier) {
+  var p = getProg();
+  var confirm_msg = 'Set "' + nameKey + '" canonical values to:\n'
+    + '  Code: ' + canonicalCode + '\n'
+    + '  NH: ' + (dh+sh+ah+oh) + ' (DH:' + dh + ' SH:' + sh + ' AH:' + ah + ' OH:' + oh + ')\n'
+    + '  Tier: T' + tier + '\n\n'
+    + 'This will update ALL entries for this course in the registry.\n'
+    + 'All developers using the app will be notified to update their programmes.\n\n'
+    + 'Proceed?';
+  if (!confirm(confirm_msg)) return;
+
+  try {
+    var resp = await fetch(REGISTRY_BACKEND + '/api/audit/resolve', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        nameKey, canonicalCode, canonicalTier: tier,
+        canonicalDH: dh, canonicalSH: sh, canonicalAH: ah, canonicalOH: oh,
+        resolver: p.hod || p.school || 'Developer',
+      })
+    });
+    var result = await resp.json();
+    toast('\u2705 Resolved! ' + result.updated + ' registry entries updated. All developers notified.', 'success');
+    loadNotifications(); // refresh notif bell
+    setTimeout(runRegistryAudit, 1000); // re-run audit
+  } catch(e) {
+    toast('\u274c Resolve failed: ' + e.message, 'error');
+  }
+}
+
+function ignoreConflict(idx) {
+  var el = document.getElementById('audit-results');
+  if (!_auditData || !_auditData.conflicts) return;
+  _auditData.conflicts.splice(idx, 1);
+  // Re-render
+  var st = document.getElementById('audit-status');
+  if (st) st.textContent = _auditData.total + ' conflicts (' + _auditData.conflicts.length + ' remaining)';
+  runRegistryAudit(); // just re-render from _auditData
+}
+
+async function exportAuditReport() {
+  if (!_auditData) { toast('Run audit first', 'error'); return; }
+  var p = getProg();
+  var lines = ['KIU COURSE REGISTRY AUDIT REPORT', 'Generated: ' + new Date().toLocaleString(), 'Total Registry: ' + _auditData.registrySize + ' courses', 'Conflicts Found: ' + _auditData.total, '', ''];
+  _auditData.conflicts.forEach(function(c) {
+    lines.push('COURSE: ' + c.name + ' [' + c.severity.toUpperCase() + ']');
+    lines.push('Issues: ' + [c.hasCodeConflict?'Code conflict':'',c.hasNHConflict?'NH conflict':'',c.isCrossSchool?'Cross-school':''].filter(Boolean).join(', '));
+    c.entries.forEach(function(e) {
+      var nh=(e.DH||0)+(e.SH||0)+(e.AH||0)+(e.OH||0);
+      lines.push('  ' + (e.programme||'?') + ' (' + (e.school||'?') + ') | ' + (e.code||'N/A') + ' | ' + nh + ' NH | T' + (e.tier||4));
+    });
+    lines.push('');
+  });
+  var blob = new Blob([lines.join('\n')], {type:'text/plain'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'KIU_Registry_Audit_' + new Date().toISOString().slice(0,10) + '.txt';
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 5000);
+  toast('\u2705 Audit report downloaded', 'success');
+}
+
+// ── Auto-audit before save ─────────────────────────────────────────────────────
+async function auditBeforeSave() {
+  var p = getProg();
+  if (!p.school) return; // skip if no school set
+  var prog_courses = courses.filter(function(c){ return !getUniversalKey(c); });
+  var issues = [];
+  // Check within-programme duplicates
+  var seenNames = {};
+  prog_courses.forEach(function(c) {
+    var k = (c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+    if (k.length > 3 && seenNames[k]) issues.push('Duplicate course name: "' + c.name + '"');
+    else seenNames[k] = true;
+  });
+  if (issues.length > 0) {
+    var proceed = confirm('\u26a0 Issues detected before saving:\n\n' + issues.join('\n') + '\n\nSave anyway?');
+    if (!proceed) return false;
+  }
+  return true;
+}
+
 
 
 function init() {

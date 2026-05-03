@@ -687,6 +687,7 @@ body { user-select: none; -webkit-user-select: none; }
     </div>
   </div>
 
+  <div id="dup-warning-banner" style="display:none"></div>
   <div id="curriculum-area">Loading...</div>
 
   <div class="toolbar">
@@ -2361,6 +2362,34 @@ function renderCurriculum() {
   assignCodes();
   const area = document.getElementById('curriculum-area');
   if (!area) return;
+
+  // ── Within-programme duplicate detection ────────────────────────────────────
+  const _seenCodes = {}, _seenNames = {};
+  const _dupCodes  = new Set(), _dupNames = new Set();
+  courses.forEach(cx => {
+    const ck = (cx.code||'').toUpperCase().trim();
+    const nk = (cx.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+    if (ck && _seenCodes[ck]) _dupCodes.add(ck);
+    else if (ck) _seenCodes[ck] = true;
+    if (nk.length > 3 && _seenNames[nk]) _dupNames.add(nk);
+    else if (nk.length > 3) _seenNames[nk] = true;
+  });
+  // Update dup banner
+  const _dupBanner = document.getElementById('dup-warning-banner');
+  if (_dupBanner) {
+    if (_dupCodes.size > 0 || _dupNames.size > 0) {
+      const _msgs = [];
+      if (_dupCodes.size > 0) _msgs.push(_dupCodes.size + ' duplicate code(s): ' + [..._dupCodes].join(', '));
+      if (_dupNames.size > 0) _msgs.push(_dupNames.size + ' duplicate name(s)');
+      _dupBanner.style.display = 'block';
+      _dupBanner.innerHTML = '<div style="background:#fff0f0;border:2px solid #c00;color:#c00;padding:10px 14px;margin-bottom:8px;border-radius:6px;font-size:12px">'
+        + '<strong>⚠️ DUPLICATE COURSES DETECTED:</strong> ' + _msgs.join(' | ')
+        + ' &nbsp;<button onclick="fixDuplicates()" class="btn btn-sm" style="background:#c00;color:white;font-size:11px">✖ Remove Duplicates</button>'
+        + '</div>';
+    } else { _dupBanner.style.display = 'none'; }
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
   const groups = groupBySem();
   let html = '';
   let totalNH=0, totalCred=0;
@@ -2423,6 +2452,7 @@ function renderCurriculum() {
       const rowClass = (uniRowKey==='WRC')?'wrc':(isInternship?'recess':(uniRowKey?'universal':(c.elective?'elective':'')));
       html += `<tr class="${rowClass}" id="row-${c.id}">
         <td>
+          ${_dupCodes.has((c.code||'').toUpperCase().trim())?'<span style=\"background:#c00;color:white;font-size:8px;padding:1px 5px;border-radius:3px;margin-right:3px\" title=\"DUPLICATE CODE in this programme\">DUP</span>':''}${_dupNames.has((c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim())?'<span style=\"background:#c85a00;color:white;font-size:8px;padding:1px 5px;border-radius:3px;margin-right:3px\" title=\"DUPLICATE NAME in this programme\">DUP</span>':''}
           <span class="code-tag">${c.code||''}</span>
           ${isUniversal(c)?'<span class="badge badge-gold" style="font-size:9px;margin-left:3px;" title="Universal KIU course — code &amp; name standardised across all programmes">🔒 UNI</span>':''}
         </td>
@@ -3705,7 +3735,19 @@ async function runConflictCheckAll() {
   var prog_courses = courses.filter(function(c){ return !getUniversalKey(c); });
   if (!prog_courses.length) return;
 
-  toast('🔍 Checking ' + prog_courses.length + ' courses against KIU registry...', 'info');
+  // Within-programme duplicate check first
+  var _snChk = {}, _ldups = [];
+  prog_courses.forEach(function(c) {
+    var k = (c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+    if (k.length > 3 && _snChk[k]) _ldups.push(c.name);
+    else if (k.length > 3) _snChk[k] = true;
+  });
+  if (_ldups.length > 0) {
+    toast('⚠ Duplicates within programme: ' + _ldups.slice(0,3).join(', '), 'error');
+    renderCurriculum(); // show DUP badges
+    return;
+  }
+  toast('Checking ' + prog_courses.length + ' courses against KIU registry...', 'info');
   var conflicts_found = 0;
 
   for (var i = 0; i < prog_courses.length; i++) {
@@ -3766,6 +3808,26 @@ function buildSharedCoursesTable() {
   return out;
 }
 
+
+
+
+function fixDuplicates() {
+  var seenCodes = {}, seenNames = {}, toRemove = [];
+  courses.forEach(function(c) {
+    if (getUniversalKey(c)) return; // Never remove UCC
+    var ck = (c.code||'').toUpperCase().trim();
+    var nk = (c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+    if (ck && seenCodes[ck]) { if (!toRemove.includes(c.id)) toRemove.push(c.id); }
+    else if (ck) seenCodes[ck] = true;
+    if (nk.length > 3 && seenNames[nk]) { if (!toRemove.includes(c.id)) toRemove.push(c.id); }
+    else if (nk.length > 3) seenNames[nk] = true;
+  });
+  if (!toRemove.length) { toast('No duplicates found', 'info'); return; }
+  if (!confirm('Remove ' + toRemove.length + ' duplicate course(s)? This cannot be undone.')) return;
+  courses = courses.filter(function(c){ return !toRemove.includes(c.id); });
+  assignCodes(); renderCurriculum();
+  toast('\u2705 Removed ' + toRemove.length + ' duplicate(s)', 'success');
+}
 
 
 // SEMESTER ENFORCEMENT ENGINE - 600 NH / 60 Credits per semester
@@ -4323,11 +4385,12 @@ async function extractAndFillWithRegistry() {
 
     toast('\u2705 ' + courses.length + ' courses loaded from "' + (meta.abbr || 'programme') + '"!', 'success');
 
-    // Auto-fill from registry & save
-    setTimeout(function(){ autoFillFromRegistry().catch(function(){}); }, 800);
-    saveProgrammeCourseUnits().catch(function(){});
-    // Run cross-registry conflict check after extraction
-    setTimeout(runConflictCheckAll, 1500);
+    // Save to registry FIRST (await), then run conflict check
+    try { await saveProgrammeCourseUnits(); } catch(e) { console.warn('Registry save:', e); }
+    // Now run conflict check (registry has current programme data)
+    setTimeout(runConflictCheckAll, 600);
+    // Auto-fill details from registry
+    setTimeout(function(){ autoFillFromRegistry().catch(function(){}); }, 1500);
     switchTab('curriculum');
 
   } catch(e) {

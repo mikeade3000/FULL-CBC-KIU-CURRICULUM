@@ -1236,10 +1236,20 @@ function assignCodes() {
     const ukey = getUniversalKey(c);
     if (ukey) {
       // Assign a fixed serial slot per UCC course in its semester
-      const uccOrder = ['UCC_ICF','UCC_ELS','UCC_CS','UCC_RM','UCC_CE','UCC_IN1','WRC','UCC_RR','UCC_IN2'];
+      const uccOrder = ['UCC_ICF','UCC_ELS','UCC_CS','UCC_RM','UCC_CE','UCC_IN1','WRC','UCC_IN2','UCC_RR','UCC_IN3','UCC_IN4','UCC_IN5'];
       const uccIdx = uccOrder.indexOf(ukey);
       const serial = String(uccIdx >= 0 ? uccIdx + 1 : 99).padStart(2,'0');
       c.code = `${c.prefix} ${level}${c.year}${semNum}${serial}`;
+      // ENFORCE canonical UNIVERSAL NH values — never allow document to override
+      const uDef = UNIVERSAL[ukey];
+      if (uDef) {
+        c.DH = uDef.DH; c.SH = uDef.SH; c.AH = uDef.AH; c.OH = uDef.OH;
+        c.type   = uDef.type || c.type;
+        c.prefix = uDef.prefix || c.prefix;
+        c.year   = uDef.year   || c.year;
+        c.sem    = uDef.sem    || c.sem;
+        c.locked_ucc = true;
+      }
     } else {
       // Programme-specific courses: count from where UCC leaves off in that semester
       if (!semSerials[globalKey]) semSerials[globalKey] = 1;
@@ -4550,6 +4560,22 @@ async function extractAndFillWithRegistry() {
     }).filter(function(c){ return c.name.length > 1; });
 
     nextId = courses.length + 1;
+
+    // CRITICAL: Force canonical UNIVERSAL values on all UCC courses
+    // (document may have wrong NH — always use UNIVERSAL as ground truth)
+    courses.forEach(function(c) {
+      var ukey = getUniversalKey(c);
+      if (ukey && UNIVERSAL[ukey]) {
+        var def = UNIVERSAL[ukey];
+        c.DH = def.DH; c.SH = def.SH; c.AH = def.AH; c.OH = def.OH;
+        c.type   = def.type   || c.type;
+        c.prefix = def.prefix || c.prefix;
+        c.year   = def.year   || c.year;
+        c.sem    = def.sem    || c.sem;
+        c.name   = def.name   || c.name;  // canonical name
+        c.locked_ucc = true;
+      }
+    });
 
     // Enforce 600 NH per semester and assign codes
     enforceSemesterTargets({ verbose: false });

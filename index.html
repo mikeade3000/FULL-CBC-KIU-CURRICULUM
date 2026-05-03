@@ -3937,6 +3937,7 @@ function setCourseT2T3(courseId) {
 // ── Run conflict check on all courses after import ─────────────────────────────
 // ── Shared and Borrowed Courses Table for Word doc ─────────────────────────────
 function buildSharedCoursesTable() {
+  var p = getProg();
   var NAVY='0F2D4A', WHITE='FFFFFF';
   var shared = courses.filter(function(c){ return (c.tier||4) < 4 && !getUniversalKey(c); });
   if (!shared.length) return '';
@@ -4050,6 +4051,7 @@ function autoBalanceNH() {
 }
 
 function balanceOneSemester(year, sem) {
+  var p = getProg();
   var core = courses.filter(function(c){return c.year===year&&c.sem===sem&&!c.elective;});
   var adjustable = core.filter(function(c){return !isUniversal(c);});
   var lockedNH = core.filter(function(c){return isUniversal(c);}).reduce(function(s,c){return s+getNH(c);},0);
@@ -4440,6 +4442,7 @@ function normalizeSem(sem) {
 }
 
 async function extractAndFillWithRegistry() {
+  var p = getProg();
   var rawText = importText || (document.getElementById('import-text') ? document.getElementById('import-text').value.trim() : '');
   if (!rawText) { toast('Please upload a file or paste programme text first', 'error'); return; }
 

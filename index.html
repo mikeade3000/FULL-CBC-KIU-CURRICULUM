@@ -3415,18 +3415,77 @@ function markAllNotifsRead() {
 function checkCourseConflictOnline(c, onResult) {
   var p = getProg();
   if (!c.name || getUniversalKey(c)) { onResult(null); return; }
-  fetch(REGISTRY_BACKEND + '/api/registry/check', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      name: c.name, code: c.code,
-      school: p.school, dept: p.dept, programme: p.name,
-      year: c.year, sem: c.sem
+
+  var nameLower = (c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+  var nameWords = nameLower.split(/\s+/).filter(function(w){ return w.length > 3; });
+  var threshold = nameWords.length <= 3 ? nameWords.length : Math.ceil(nameWords.length * 0.65);
+
+  // Helper: analyse results from registry entries
+  function analyseEntries(entries) {
+    var conflicts = entries.filter(function(r) {
+      if (r.programme === p.name) return false; // skip own programme
+      // Code match
+      if (c.code && r.code && r.code.toUpperCase() === c.code.toUpperCase()) return true;
+      // Name similarity
+      var rName = (r.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'');
+      var rWords = rName.split(/\s+/).filter(function(w){ return w.length > 3; });
+      var common = nameWords.filter(function(w){ return rWords.indexOf(w) >= 0; });
+      return common.length >= threshold;
+    });
+    if (!conflicts.length) return null;
+    var isCrossSchool = conflicts.some(function(r){ return r.school && r.school !== p.school; });
+    var isCrossDept   = conflicts.some(function(r){ return r.dept && r.dept !== p.dept && r.school === p.school; });
+    return {
+      hasConflicts: true, isCrossSchool: isCrossSchool, isCrossDept: isCrossDept,
+      conflicts: conflicts.slice(0,10),
+      suggestedTier: isCrossSchool ? 2 : isCrossDept ? 3 : 4,
+    };
+  }
+
+  // Step 1: Check local IndexedDB (always available, even when Render is down)
+  dbGetAll('courses').then(function(localEntries) {
+    var localResult = localEntries && localEntries.length ? analyseEntries(localEntries) : null;
+
+    // Step 2: Also check backend (may have entries from other browsers/computers)
+    fetch(REGISTRY_BACKEND + '/api/registry/check', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name:c.name, code:c.code, school:p.school, dept:p.dept, programme:p.name, year:c.year, sem:c.sem })
     })
-  })
-  .then(function(r){ return r.ok ? r.json() : null; })
-  .then(function(data){ onResult(data); })
-  .catch(function(){ onResult(null); });
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(backendResult) {
+      // Merge results: combine unique conflicts from both sources
+      if (!localResult && !backendResult) { onResult(null); return; }
+      if (!backendResult || !backendResult.hasConflicts) { onResult(localResult); return; }
+      if (!localResult || !localResult.hasConflicts) { onResult(backendResult); return; }
+      // Both have conflicts — merge
+      var seen = new Set();
+      var merged = [];
+      [].concat(backendResult.conflicts, localResult.conflicts).forEach(function(r) {
+        var k = (r.code||'')+'|'+(r.name||'')+'|'+(r.programme||'');
+        if (!seen.has(k)) { seen.add(k); merged.push(r); }
+      });
+      onResult({
+        hasConflicts: true,
+        isCrossSchool: backendResult.isCrossSchool || localResult.isCrossSchool,
+        isCrossDept:   backendResult.isCrossDept   || localResult.isCrossDept,
+        conflicts:     merged.slice(0,10),
+        suggestedTier: Math.min(backendResult.suggestedTier||4, localResult.suggestedTier||4),
+      });
+    })
+    .catch(function() {
+      // Backend unreachable — use local result only
+      onResult(localResult);
+      if (localResult) toast('\ud83d\udcf6 Offline: conflict check used local registry only', 'info');
+    });
+  }).catch(function() {
+    // IndexedDB failed — try backend only
+    fetch(REGISTRY_BACKEND + '/api/registry/check', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name:c.name, code:c.code, school:p.school, dept:p.dept, programme:p.name })
+    }).then(function(r){ return r.ok?r.json():null; })
+    .then(function(d){ onResult(d); })
+    .catch(function(){ onResult(null); });
+  });
 }
 
 // ── Show ownership dialogue when conflict detected ─────────────────────────────
@@ -4860,12 +4919,48 @@ async function auditBeforeSave() {
 
 
 
+
+// ── Sync local IndexedDB registry to backend (recovers after Render restart) ──
+async function syncLocalRegistryToBackend() {
+  try {
+    var localCourses = await dbGetAll('courses');
+    if (!localCourses || !localCourses.length) return;
+
+    // Group by programme and push to backend
+    var byProg = {};
+    localCourses.forEach(function(c) {
+      var key = c.programme || 'unknown';
+      if (!byProg[key]) byProg[key] = { programme:c.programme, school:c.school, dept:c.dept, courses:[] };
+      byProg[key].courses.push(c);
+    });
+
+    var pushed = 0;
+    for (var progKey in byProg) {
+      var pg = byProg[progKey];
+      try {
+        await fetch(REGISTRY_BACKEND + '/api/registry', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ programme:pg.programme, school:pg.school, dept:pg.dept, courses:pg.courses })
+        });
+        pushed += pg.courses.length;
+      } catch(e) {}
+    }
+    if (pushed > 0) console.log('Synced', pushed, 'courses to backend registry');
+  } catch(e) {
+    console.warn('Registry sync failed:', e.message);
+  }
+}
+
+
+
 function init() {
   setTimeout(insertDisclaimerBar, 600);
   assignCodes();
   // Load registry notifications
   setTimeout(loadNotifications, 2000);
   setTimeout(pullAllLockedContent, 3000);
+  // Re-sync local registry to backend (recovers after Render restart)
+  setTimeout(syncLocalRegistryToBackend, 4000);
   updateApiStatus();
   renderUniversalRegistry();
   // Auto-fill course details from shared registry

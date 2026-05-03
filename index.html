@@ -1369,40 +1369,47 @@ async function generateSection(key) {
 }
 
 async function generateCourseDetail(courseId) {
-  const c = courses.find(x=>x.id===courseId);
+  var c = courses.find(function(x){return x.id===courseId;});
   if (!c) return;
-  const btn = document.getElementById('cdet-btn-'+courseId);
-  const dot = document.getElementById('cdet-dot-'+courseId);
+  // LOCK CHECK — cannot regenerate borrowed/locked courses
+  if (c.borrowed && c.locked) {
+    toast('\ud83d\udd12 Locked \u2014 content owned by '+(c.ownerSchool||'another dept')
+      +'. Use the \u2702 Detach button to create your own editable version.', 'error');
+    return;
+  }
+  const btn  = document.getElementById('cdet-btn-'+courseId);
+  const dot  = document.getElementById('cdet-dot-'+courseId);
   const item = document.getElementById('cdet-item-'+courseId);
   if (btn) { btn.disabled=true; btn.innerHTML='<span class="spin"></span>'; }
-  if (dot) { dot.className='sec-dot running'; dot.textContent='⟳'; }
+  if (dot) { dot.className='sec-dot running'; dot.textContent='\u27f3'; }
   if (item) { item.className='sec-item running'; }
-
-  const curEl = document.getElementById('gen-current');
-  const curTxt = document.getElementById('gen-current-text');
+  const curEl  = document.getElementById('gen-current');
+  const curTxt = document.getElementById('gen-cu-name');
   if (curEl) curEl.style.display='flex';
-  if (curTxt) curTxt.textContent = `Generating course: ${c.code} ${c.name}…`;
-
+  if (curTxt) curTxt.textContent = c.code+' '+c.name;
   try {
     const text = await callLlama(courseDetailPrompt(c), SYSTEM_PROMPT, 4000);
-    courseDetails[c.code] = { text, done: true };
-    // Save to backend registry for cross-browser access
-    fetch(REGISTRY_BACKEND + '/api/course-detail', {
+    courseDetails[c.code] = { text: text, done: true, locked: false, borrowed: false };
+    // Save to backend registry (owner's authoritative content)
+    const p = getProg();
+    fetch(REGISTRY_BACKEND+'/api/course-detail', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ code: c.code, name: c.name, programme: getProg().name, text })
+      body: JSON.stringify({ code:c.code, name:c.name, programme:p.name,
+        school:p.school, dept:p.dept, tier:getCourseTier(c), text:text })
     }).catch(function(){});
-    if (btn) { btn.disabled=false; btn.innerHTML='↺'; }
-    if (dot) { dot.className='sec-dot done'; dot.textContent='✓'; }
+    if (btn)  { btn.disabled=false; btn.innerHTML='\u21ba'; }
+    if (dot)  { dot.className='sec-dot done'; dot.textContent='\u2713'; }
     if (item) { item.className='sec-item done'; }
-    if (!isGeneratingAll) { if(curEl) curEl.style.display='none'; toast(`✅ ${c.name} generated`,'success'); }
+    if (!isGeneratingAll) { if(curEl) curEl.style.display='none'; toast('\u2705 '+c.code+' \u2014 '+c.name+' generated!','success'); }
   } catch(e) {
-    if (btn) { btn.disabled=false; btn.innerHTML='Gen'; }
-    if (dot) { dot.className='sec-dot pending'; dot.textContent='○'; }
+    if (btn)  { btn.disabled=false; btn.innerHTML='Gen'; }
+    if (dot)  { dot.className='sec-dot pending'; dot.textContent='\u25cb'; }
     if (item) { item.className='sec-item'; }
-    if (!isGeneratingAll) { if(curEl) curEl.style.display='none'; toast('❌ '+e.message,'error'); }
+    if (!isGeneratingAll) { if(curEl) curEl.style.display='none'; toast('\u274c '+e.message,'error'); }
   }
   updateProgress();
 }
+
 
 async function generateAll() {
   // API key handled by backend
@@ -2913,47 +2920,58 @@ function courseDetailPrompt(c) {
 
 
 function renderGenerateTab() {
-  // Populate WRC units badges
-  const wrcBadgesEl = document.getElementById('wrc-units-badges');
-  if (wrcBadgesEl && UNIVERSAL.WRC.units) {
-    wrcBadgesEl.innerHTML = UNIVERSAL.WRC.units.map(u =>
-      `<span class="badge badge-teal" style="font-size:10px;">${u.code}: ${u.name} (${u.contactHours}h)</span>`
-    ).join('');
+  var wrcEl = document.getElementById('wrc-units-badges');
+  if (wrcEl && UNIVERSAL.WRC && UNIVERSAL.WRC.units) {
+    wrcEl.innerHTML = UNIVERSAL.WRC.units.map(function(u){
+      return '<span class="badge badge-teal" style="font-size:10px">'+u.code+': '+u.name+' ('+u.contactHours+'h)</span>';
+    }).join('');
   }
   assignCodes();
   // Programme sections
-  let secHtml = '';
-  SECTIONS.forEach(s => {
-    const state = sectionContent[s.key];
-    const cls = state.done ? 'done' : '';
-    const dotCls = state.done ? 'done' : 'pending';
-    const dotIcon = state.done ? '✓' : '○';
-    secHtml += `<div class="sec-item ${cls}" id="sec-item-${s.key}">
-      <div class="sec-dot ${dotCls}" id="sec-dot-${s.key}">${dotIcon}</div>
-      <div class="sec-name">${s.num} ${s.title}</div>
-      <button class="btn btn-sm ${state.done?'btn-outline':'btn-teal'}" onclick="generateSection('${s.key}')" id="sec-btn-${s.key}">
-        ${state.done ? '↺ Redo' : 'Generate'}
-      </button>
-    </div>`;
+  var secHtml = '';
+  SECTIONS.forEach(function(s) {
+    var st = sectionContent[s.key] || {done:false};
+    secHtml += '<div class="sec-item '+(st.done?'done':'')+'" id="sec-item-'+s.key+'">'
+      +'<div class="sec-dot '+(st.done?'done':'pending')+'" id="sec-dot-'+s.key+'">'+(st.done?'&#10003;':'&#9675;')+'</div>'
+      +'<div class="sec-name">'+s.num+' '+s.title+'</div>'
+      +'<button class="btn btn-sm '+(st.done?'btn-outline':'btn-teal')+'" onclick="generateSection(\''+s.key+'\')" id="sec-btn-'+s.key+'">'
+      +(st.done?'&#8635; Redo':'Generate')+'</button></div>';
   });
   document.getElementById('sections-list').innerHTML = secHtml;
-
-  // Course details
-  let courseHtml = '';
-  courses.forEach(c => {
-    const detail = courseDetails[c.code];
-    const done = detail?.done;
-    const cls = done ? 'done' : '';
-    courseHtml += `<div class="sec-item ${cls}" id="cdet-item-${c.id}">
-      <div class="sec-dot ${done?'done':'pending'}" id="cdet-dot-${c.id}">${done?'✓':'○'}</div>
-      <div class="sec-name" style="font-size:12px">
-        <span class="code-tag" style="font-size:10px">${c.code}</span>
-        &nbsp;${c.name}
-      </div>
-      <button class="btn btn-sm ${done?'btn-outline':'btn-teal'}" onclick="generateCourseDetail(${c.id})" id="cdet-btn-${c.id}">
-        ${done?'↺':'Gen'}
-      </button>
-    </div>`;
+  // Course details with lock awareness
+  var courseHtml = '';
+  courses.forEach(function(c) {
+    var detail   = courseDetails[c.code] || {};
+    var done     = !!detail.done;
+    var isLocked = !!(c.borrowed && c.locked);
+    var ukey     = getUniversalKey(c);
+    if (isLocked) {
+      var lockOwner = (c.ownerSchool||'') + (c.ownerDept?' / '+c.ownerDept:'') || 'Registry';
+      var pulledOn  = detail.pulledAt ? new Date(detail.pulledAt).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '';
+      courseHtml += '<div class="sec-item '+(done?'done':'')+'" id="cdet-item-'+c.id+'"'
+        +' style="border-left:3px solid #C85A00;background:'+(done?'#fff8f0':'#fff4ee')+'">'
+        +'<div class="sec-dot '+(done?'done':'pending')+'" id="cdet-dot-'+c.id+'">'+(done?'&#128274;':'&#8987;')+'</div>'
+        +'<div class="sec-name" style="font-size:12px;flex:1">'
+        +'<span class="code-tag" style="font-size:10px;background:#C85A00;color:white">'+c.code+'</span>'
+        +' <strong>'+c.name+'</strong>'
+        +'<div style="font-size:10px;color:#C85A00;margin-top:2px">&#128274; LOCKED &mdash; owned by '+lockOwner+(pulledOn?' &middot; pulled '+pulledOn:'')+'</div>'
+        +'</div>'
+        +'<div style="display:flex;gap:4px">'
+        +(done
+          ? '<button class="btn btn-sm btn-outline" onclick="viewLockedContent('+c.id+')" style="font-size:10px" title="View content">&#128065; View</button>'
+          : '<button class="btn btn-sm btn-teal" onclick="pullLockedContent(courses.find(function(x){return x.id==='+c.id+';})).then(function(ok){if(ok)renderGenerateTab();else toast(\'Content not yet available in registry\',\'info\');})" style="font-size:10px" title="Pull from registry">&#11015; Pull</button>')
+        +'<button class="btn btn-sm" onclick="detachBorrowedCourse('+c.id+')" style="font-size:10px;background:#6B21A8;color:white" title="Detach and create own version">&#9986; Detach</button>'
+        +'</div></div>';
+    } else {
+      courseHtml += '<div class="sec-item '+(done?'done':'')+'" id="cdet-item-'+c.id+'">'
+        +'<div class="sec-dot '+(done?'done':'pending')+'" id="cdet-dot-'+c.id+'">'+(done?'&#10003;':'&#9675;')+'</div>'
+        +'<div class="sec-name" style="font-size:12px">'
+        +'<span class="code-tag" style="font-size:10px">'+c.code+'</span>&nbsp;'+esc(c.name)
+        +(ukey?'<span style="font-size:9px;color:var(--teal);margin-left:4px">[UCC]</span>':'')
+        +'</div>'
+        +'<button class="btn btn-sm '+(done?'btn-outline':'btn-teal')+'" onclick="generateCourseDetail('+c.id+')" id="cdet-btn-'+c.id+'">'
+        +(done?'&#8635;':'Gen')+'</button></div>';
+    }
   });
   document.getElementById('courses-gen-list').innerHTML = courseHtml;
   updateProgress();
@@ -3376,84 +3394,283 @@ function checkCourseConflictOnline(c, onResult) {
 }
 
 // ── Show ownership dialogue when conflict detected ─────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  LOCKED BORROW SYSTEM — Option A
+//  Borrowed courses: locked code, auto-pulled content, read-only in generator
+//  Owner updates propagate automatically to all borrowers
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Apply borrow: immediately update code, prefix, NH, tier ──────────────────
+function applyBorrowToCourse(c, ownerRecord) {
+  if (!c || !ownerRecord) return;
+  // Update canonical code and metadata to match owner
+  c.code        = ownerRecord.code       || c.code;
+  c.prefix      = ownerRecord.prefix     || ownerRecord.code && ownerRecord.code.split(' ')[0] || c.prefix;
+  c.tier        = ownerRecord.tier       || 3;
+  c.ownerSchool = ownerRecord.school     || ownerRecord.ownerSchool || '';
+  c.ownerDept   = ownerRecord.dept       || ownerRecord.ownerDept   || '';
+  c.ownerProg   = ownerRecord.programme  || ownerRecord.ownerProg   || '';
+  c.ownerCode   = ownerRecord.code       || c.code;
+  c.borrowed    = true;
+  c.locked      = true;
+  // Adopt owner NH structure
+  if (ownerRecord.DH !== undefined) c.DH = ownerRecord.DH;
+  if (ownerRecord.SH !== undefined) c.SH = ownerRecord.SH;
+  if (ownerRecord.AH !== undefined) c.AH = ownerRecord.AH;
+  if (ownerRecord.OH !== undefined) c.OH = ownerRecord.OH;
+  if (ownerRecord.type) c.type = ownerRecord.type;
+  renderCurriculum();
+}
+
+// ── Pull locked content from backend registry ─────────────────────────────────
+async function pullLockedContent(c) {
+  if (!c || !c.borrowed || !c.locked) return false;
+  try {
+    var resp = await fetch(REGISTRY_BACKEND + '/api/course-detail?code='
+      + encodeURIComponent(c.ownerCode || c.code)
+      + '&name=' + encodeURIComponent(c.name));
+    if (!resp.ok) return false;
+    var data = await resp.json();
+    if (data && data.text) {
+      courseDetails[c.code] = {
+        text:       data.text,
+        done:       true,
+        locked:     true,
+        borrowed:   true,
+        ownerCode:  c.ownerCode || c.code,
+        ownerProg:  c.ownerProg || data.programme || '',
+        ownerSchool:c.ownerSchool || data.school   || '',
+        ownerDept:  c.ownerDept  || data.dept      || '',
+        pulledAt:   new Date().toISOString(),
+      };
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
+
+// ── Auto-pull all locked course content on load ───────────────────────────────
+async function pullAllLockedContent() {
+  var locked = courses.filter(function(c){ return c.borrowed && c.locked; });
+  if (!locked.length) return;
+  var pulled = 0;
+  for (var i = 0; i < locked.length; i++) {
+    var c = locked[i];
+    // Skip if already have current content
+    if (courseDetails[c.code] && courseDetails[c.code].done) {
+      // But still check for owner updates
+      await checkOwnerUpdate(c);
+      continue;
+    }
+    var ok = await pullLockedContent(c);
+    if (ok) pulled++;
+  }
+  if (pulled > 0) {
+    renderGenerateTab();
+    toast('🔒 ' + pulled + ' locked course(s) pulled from registry', 'info');
+  }
+}
+
+// ── Check if owner has updated their content since last pull ──────────────────
+async function checkOwnerUpdate(c) {
+  if (!c.borrowed || !c.locked) return;
+  try {
+    var resp = await fetch(REGISTRY_BACKEND + '/api/course-detail?code='
+      + encodeURIComponent(c.ownerCode || c.code));
+    if (!resp.ok) return;
+    var data = await resp.json();
+    if (!data || !data.text) return;
+    var existing = courseDetails[c.code];
+    // Compare updatedAt timestamps
+    if (existing && existing.pulledAt && data.updatedAt) {
+      var pulledTime  = new Date(existing.pulledAt).getTime();
+      var updatedTime = new Date(data.updatedAt).getTime();
+      if (updatedTime > pulledTime) {
+        // Owner has updated — auto-apply
+        courseDetails[c.code] = {
+          text:       data.text,
+          done:       true,
+          locked:     true,
+          borrowed:   true,
+          ownerCode:  c.ownerCode || c.code,
+          ownerProg:  c.ownerProg || data.programme || '',
+          ownerSchool:c.ownerSchool || '',
+          ownerDept:  c.ownerDept  || '',
+          pulledAt:   new Date().toISOString(),
+          autoUpdated: true,
+        };
+        // Fire notification
+        var p = getProg();
+        fetch(REGISTRY_BACKEND + '/api/notifications', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            type: 'AUTO_UPDATE',
+            title: '"' + c.name + '" auto-updated by owner',
+            message: 'The content of "' + c.name + '" (' + c.code + ') was updated by '
+              + (c.ownerSchool||'the owning department') + ' and automatically applied to '
+              + p.name + '.',
+            forSchool:    p.school,
+            forDept:      p.dept,
+            fromSchool:   c.ownerSchool,
+            fromProgramme:c.ownerProg,
+            developer:    p.hod || '',
+            read: false,
+            timestamp: new Date().toISOString(),
+          })
+        }).catch(function(){});
+        renderGenerateTab();
+        toast('🔄 "' + c.name + '" auto-updated from owner registry', 'info');
+      }
+    } else if (!existing || !existing.done) {
+      // First pull
+      courseDetails[c.code] = {
+        text:       data.text,
+        done:       true,
+        locked:     true,
+        borrowed:   true,
+        ownerCode:  c.ownerCode || c.code,
+        ownerProg:  data.programme || '',
+        ownerSchool:data.school    || '',
+        ownerDept:  data.dept      || '',
+        pulledAt:   new Date().toISOString(),
+      };
+    }
+  } catch(e) {}
+}
+
+// ── Detach a borrowed course — creates independent T4 copy ───────────────────
+function detachBorrowedCourse(courseId) {
+  var c = courses.find(function(x){ return x.id === courseId; });
+  if (!c || !c.borrowed) return;
+  if (!confirm(
+    'Detach "' + c.name + '" from the shared registry?\n\n'
+    + 'This will:\n'
+    + '• Create a new programme-specific copy (T4 PROG)\n'
+    + '• Assign a new code under your programme prefix\n'
+    + '• Unlock the content for your own editing\n'
+    + '• You will NO LONGER receive automatic updates from the owner\n\n'
+    + 'The original shared course in the registry is NOT affected.\n\n'
+    + 'Are you sure?'
+  )) return;
+
+  var p = getProg();
+  c.borrowed    = false;
+  c.locked      = false;
+  c.tier        = 4;
+  c.prefix      = p.prefix || c.prefix;
+  c.ownerSchool = '';
+  c.ownerDept   = '';
+  c.ownerProg   = '';
+  c.ownerCode   = '';
+  // Unlock course detail content
+  if (courseDetails[c.code]) {
+    courseDetails[c.code].locked   = false;
+    courseDetails[c.code].borrowed = false;
+  }
+  assignCodes(); // re-assign new programme-specific code
+  renderCurriculum();
+  renderGenerateTab();
+  toast('✅ "' + c.name + '" detached — now a T4 programme-specific course', 'success');
+}
+
+// ── View locked content (read-only preview) ───────────────────────────────────
+function viewLockedContent(courseId) {
+  var c = courses.find(function(x){ return x.id === courseId; });
+  if (!c) return;
+  var detail = courseDetails[c.code];
+  if (!detail || !detail.text) {
+    toast('No content available yet for this course', 'info');
+    return;
+  }
+  // Switch to full preview tab and scroll to this course
+  switchTab('preview');
+  setTimeout(function() {
+    var el = document.getElementById('preview-course-' + c.id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 300);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  UPDATED: showOwnershipDialogue — applies lock immediately on borrow
+// ══════════════════════════════════════════════════════════════════════════════
+
+
 function showOwnershipDialogue(c, conflictData, onDecision) {
   var p = getProg();
   var conflicts = conflictData && conflictData.conflicts ? conflictData.conflicts : [];
   if (!conflicts.length) { onDecision('own', null); return; }
 
-  // Build usage list
   var usageLines = conflicts.map(function(r) {
     var tier = TIERS[r.tier||4];
-    return '• ' + (r.programme||'Unknown Programme')
-      + ' (' + (r.school||'?') + ' / ' + (r.dept||'?') + ')'
-      + ' — ' + (r.code||'no code') + ' [' + (tier?tier.label:'T4') + ']';
+    return '\u2022 ' + (r.programme||'Unknown') + ' (' + (r.school||'?') + ' / ' + (r.dept||'?') + ')'
+      + ' \u2014 ' + (r.code||'no code') + ' [' + (tier?tier.label:'T4') + ']';
   }).join('\n');
 
-  var ownerConflict = conflicts[0];
+  var ownerRecord   = conflicts[0];
   var isCrossSchool = conflictData.isCrossSchool;
   var isCrossDept   = conflictData.isCrossDept;
   var suggestedTier = conflictData.suggestedTier || 4;
 
-  var msg = '⚠️  COURSE REGISTRY CONFLICT DETECTED\n\n'
+  var msg = '\u26a0\ufe0f  COURSE REGISTRY CONFLICT\n\n'
     + 'Course: "' + c.name + '"' + (c.code ? ' (' + c.code + ')' : '') + '\n'
     + 'Your school/dept: ' + (p.school||'?') + ' / ' + (p.dept||'?') + '\n\n'
     + 'This course already exists in the KIU registry:\n'
     + usageLines + '\n\n'
-    + (isCrossSchool
-        ? '⚠️  CROSS-SCHOOL CONFLICT: This course belongs to a DIFFERENT school.\n'
-        : isCrossDept
-        ? '⚠️  CROSS-DEPT CONFLICT: This course exists in another department in your school.\n'
-        : '')
-    + '\nSuggested classification: Tier ' + suggestedTier
-    + ' (' + (TIERS[suggestedTier]||TIERS[4]).name + ')\n\n'
-    + 'What would you like to do?\n'
-    + '1 = BORROW — Use the existing course as-is (keeps owner\'s code and structure)\n'
-    + '2 = NEW VERSION — Create a separate programme-specific copy (T4)\n'
-    + '3 = RECLASSIFY — Request this be upgraded to a shared tier (T' + suggestedTier + ')\n\n'
+    + (isCrossSchool ? '\u26a0 CROSS-SCHOOL: This course belongs to a different school.\n' : '')
+    + (isCrossDept   ? '\u26a0 CROSS-DEPT: This course exists in another department.\n'    : '')
+    + '\nOwner code: ' + (ownerRecord.code||'N/A')
+    + ' | Owner NH: ' + ((ownerRecord.DH||0)+(ownerRecord.SH||0)+(ownerRecord.AH||0)+(ownerRecord.OH||0)) + ' NH'
+    + '\n\nOptions:\n'
+    + '1 = BORROW (Locked) \u2014 Use owner\'s code + structure. Content auto-pulled and locked.\n'
+    + '       Your code will change to: ' + (ownerRecord.code||'owner code') + '\n'
+    + '2 = NEW VERSION \u2014 Create your own T4 programme-specific copy\n'
+    + '3 = RECLASSIFY \u2014 Request upgrade to T' + suggestedTier + ' shared tier\n\n'
     + 'Enter 1, 2, or 3:';
 
-  var choice = prompt(msg, '1');
-  var decision = choice === '2' ? 'new' : choice === '3' ? 'reclassify' : 'borrow';
+  var choice  = prompt(msg, '1');
+  var decision= choice==='2'?'new':choice==='3'?'reclassify':'borrow';
 
-  // Record the decision on the backend
+  // Record decision on backend
   fetch(REGISTRY_BACKEND + '/api/registry/borrow', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
+    method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
-      courseCode:       c.code || '',
-      courseName:       c.name || '',
+      courseCode:        c.code||'',
+      courseName:        c.name||'',
       borrowerProgramme: p.name,
       borrowerSchool:    p.school,
       borrowerDept:      p.dept,
-      ownerProgramme:    ownerConflict.programme,
-      ownerSchool:       ownerConflict.school,
-      ownerDept:         ownerConflict.dept,
-      ownerCode:         ownerConflict.code,
-      developer:         p.hod || 'Unknown Developer',
+      ownerProgramme:    ownerRecord.programme,
+      ownerSchool:       ownerRecord.school,
+      ownerDept:         ownerRecord.dept,
+      ownerCode:         ownerRecord.code,
+      developer:         p.hod||'',
       decision:          decision,
     })
   }).catch(function(){});
 
-  // If borrowing, set canonical code and tier on this course
   if (decision === 'borrow') {
-    c.code        = ownerConflict.code || c.code;
-    c.tier        = ownerConflict.tier || suggestedTier;
-    c.ownerSchool = ownerConflict.school;
-    c.ownerDept   = ownerConflict.dept;
-    c.ownerProg   = ownerConflict.programme;
-    toast('✅ Borrowing "' + c.name + '" from ' + (ownerConflict.school||'registry'), 'success');
+    // IMMEDIATELY apply lock: update code, prefix, NH, tier
+    applyBorrowToCourse(c, ownerRecord);
+    // Pull content from registry
+    pullLockedContent(c).then(function(pulled) {
+      renderGenerateTab();
+      if (pulled) toast('\ud83d\udd12 "'+c.name+'" locked and content pulled from registry', 'success');
+      else        toast('\ud83d\udd12 "'+c.name+'" locked — content will pull when available', 'info');
+    });
   } else if (decision === 'reclassify') {
     c.tier = suggestedTier;
-    toast('🔄 Reclassification request sent for "' + c.name + '"', 'info');
+    toast('\ud83d\udd04 Reclassification request sent for "'+c.name+'"', 'info');
   } else {
     c.tier = 4;
-    toast('📋 Creating new programme-specific version of "' + c.name + '"', 'info');
+    toast('\ud83d\udccb New T4 version created for "'+c.name+'"', 'info');
   }
 
-  onDecision(decision, ownerConflict);
+  onDecision(decision, ownerRecord);
 }
 
-// ── Set tier on a course interactively ─────────────────────────────────────────
+
+
 function setCourseT2T3(courseId) {
   var c = courses.find(function(x){ return x.id === courseId; });
   if (!c) return;
@@ -4151,6 +4368,7 @@ function init() {
   assignCodes();
   // Load registry notifications
   setTimeout(loadNotifications, 2000);
+  setTimeout(pullAllLockedContent, 3000);
   updateApiStatus();
   renderUniversalRegistry();
   // Auto-fill course details from shared registry

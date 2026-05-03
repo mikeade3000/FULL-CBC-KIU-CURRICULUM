@@ -274,4 +274,109 @@ app.get('/api/catalogue', (req, res) => {
   res.json({ byTier, borrowMap, total:reg.length });
 });
 
+
+// ── Registry Audit: find all cross-programme inconsistencies ──────────────────
+app.get('/api/audit', (req, res) => {
+  const reg = readJSON('course_registry.json', []);
+  const filter = req.query.filter; // 'cross' = cross-school only
+
+  // Group courses by normalised name
+  const byName = {};
+  reg.forEach(c => {
+    const key = (c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+    if (!key || key.length < 4) return;
+    if (!byName[key]) byName[key] = [];
+    byName[key].push(c);
+  });
+
+  // Find conflicts: same name, different code/NH/tier/programme
+  const conflicts = [];
+  Object.entries(byName).forEach(([nameKey, entries]) => {
+    if (entries.length < 2) return;
+    // Check for inconsistencies
+    const codes = [...new Set(entries.map(e => e.code).filter(Boolean))];
+    const nhs   = [...new Set(entries.map(e => (e.DH||0)+(e.SH||0)+(e.AH||0)+(e.OH||0)).filter(v=>v>0))];
+    const tiers = [...new Set(entries.map(e => e.tier||4))];
+    const schools = [...new Set(entries.map(e => e.school).filter(Boolean))];
+    const progs = [...new Set(entries.map(e => e.programme).filter(Boolean))];
+
+    const hasCodeConflict = codes.length > 1;
+    const hasNHConflict   = nhs.length > 1;
+    const hasTierConflict = tiers.length > 1;
+    const isCrossSchool   = schools.length > 1;
+    const isCrossDept     = !isCrossSchool && progs.length > 1;
+
+    if (filter === 'cross' && !isCrossSchool) return;
+    if (!hasCodeConflict && !hasNHConflict && !hasTierConflict && progs.length < 2) return;
+
+    conflicts.push({
+      name:           entries[0].name || nameKey,
+      nameKey,
+      severity:       isCrossSchool ? 'high' : hasCodeConflict || hasNHConflict ? 'medium' : 'low',
+      isCrossSchool,
+      isCrossDept,
+      hasCodeConflict,
+      hasNHConflict,
+      hasTierConflict,
+      codes,
+      nhs,
+      tiers,
+      schools,
+      programmes:     progs,
+      entries:        entries.slice(0, 10),
+    });
+  });
+
+  // Sort by severity
+  conflicts.sort((a,b) => {
+    const sev = {high:0,medium:1,low:2};
+    return (sev[a.severity]||2) - (sev[b.severity]||2);
+  });
+
+  res.json({
+    total:       conflicts.length,
+    high:        conflicts.filter(c=>c.severity==='high').length,
+    medium:      conflicts.filter(c=>c.severity==='medium').length,
+    low:         conflicts.filter(c=>c.severity==='low').length,
+    registrySize:reg.length,
+    conflicts,
+  });
+});
+
+// ── Registry Audit: resolve a conflict (set canonical entry) ──────────────────
+app.post('/api/audit/resolve', (req, res) => {
+  const { nameKey, canonicalCode, canonicalNH, canonicalTier, canonicalDH, canonicalSH, canonicalAH, canonicalOH, resolver } = req.body;
+  if (!nameKey) return res.status(400).json({ error: 'nameKey required' });
+
+  let reg = readJSON('course_registry.json', []);
+  let updated = 0;
+  reg = reg.map(r => {
+    const key = (r.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+    if (key !== nameKey) return r;
+    // Update to canonical values
+    const updated_r = { ...r };
+    if (canonicalCode) updated_r.code = canonicalCode;
+    if (canonicalTier) updated_r.tier = canonicalTier;
+    if (canonicalDH !== undefined) { updated_r.DH=canonicalDH; updated_r.SH=canonicalSH; updated_r.AH=canonicalAH; updated_r.OH=canonicalOH; }
+    updated_r.resolvedAt = ts();
+    updated_r.resolvedBy = resolver || '';
+    updated++;
+    return updated_r;
+  });
+  writeJSON('course_registry.json', reg);
+
+  // Notify all affected programmes
+  let notifs = readJSON('notifications.json', []);
+  const first = reg.find(r => (r.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim() === nameKey);
+  notifs.unshift({
+    id: Date.now(), type: 'AUDIT_RESOLVED',
+    title: `"${first?.name||nameKey}" canonical values set`,
+    message: `Registry audit resolved: "${first?.name||nameKey}" now has canonical code ${canonicalCode||'unchanged'} and ${(canonicalDH||0)+(canonicalSH||0)+(canonicalAH||0)+(canonicalOH||0)||'unchanged'} NH. Update your programme to match.`,
+    forSchool: null, read: false, timestamp: ts()
+  });
+  writeJSON('notifications.json', notifs);
+
+  res.json({ updated, total: reg.length });
+});
+
 app.listen(PORT, () => console.log('KIU CBE API v2.2 on port', PORT));

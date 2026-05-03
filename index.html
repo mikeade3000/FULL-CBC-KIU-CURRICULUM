@@ -679,6 +679,7 @@ body { user-select: none; -webkit-user-select: none; }
     </button>
     <button class="btn btn-outline btn-sm" onclick="showBalanceReport()" title="Show NH status for each semester">📊 NH Report</button>
     <button class="btn btn-outline btn-sm" onclick="refreshCodes()">↺ Codes</button>
+    <button class="btn btn-sm" onclick="runConflictCheckAll()" style="background:#6B21A8;color:white;font-size:11px;padding:6px 12px" title="Check courses against KIU shared registry">🔍 Registry Check</button>
     <div class="toolbar-sep"></div>
     <span id="total-summary" style="font-size:12px; font-family:var(--font-mono); color:var(--gray-500);">Loading...</span>
     <div style="margin-left:auto; font-size:12px; color:var(--gray-500)">
@@ -2216,6 +2217,10 @@ async function buildWordDoc(p, coursesArr, secContent, cDetails) {
   body += mkPara('Course Code format: ' + xes(p.prefix||'') + ' ' + (p.level||7) + '[Year][Sem][Serial]', {align:'left', sz:20, before:0, after:120, italic:true});
   body += buildCurriculumXML();
 
+  // 5a. Shared & borrowed courses table
+  var _sharedTbl = buildSharedCoursesTable();
+  if (_sharedTbl) body += _sharedTbl;
+
   // 5. Sections 18–22
   var latterSections = [
     ['research','18.','Research and Innovation'],
@@ -2232,6 +2237,10 @@ async function buildWordDoc(p, coursesArr, secContent, cDetails) {
     body += textToWordXML(rawText);
     body += sp(1);
   });
+
+  // 5b. Shared Courses Table (if any)
+  var sharedTable = buildSharedCoursesTable();
+  if (sharedTable) { body += sharedTable; }
 
   // 6. Detailed Course Content
   body += '<w:p><w:pPr/><w:r><w:rPr/><w:br w:type="page"/></w:r></w:p>';
@@ -2438,6 +2447,9 @@ function renderCurriculum() {
         <td style="text-align:center">
           <input type="checkbox" ${c.elective?'checked':''} onchange="updateCourse(${c.id},'elective',this.checked)" title="Mark as elective">
           ${c.elective?'<span class="badge badge-gold" style="font-size:9px">E</span>':''}
+        </td>
+        <td style="text-align:center;cursor:pointer" onclick="setCourseT2T3(${c.id})" title="Click to change tier">
+          ${getTierBadgeHtml(getCourseTier(c))}
         </td>
         <td style="text-align:center">
           <button class="btn btn-red btn-xs" onclick="deleteCourse(${c.id})">✕</button>
@@ -3230,6 +3242,315 @@ function renderUniversalRegistry() {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  FOUR-TIER COURSE CLASSIFICATION SYSTEM
+//  T1 = UCC  (University Common Courses)         — navy/teal badge
+//  T2 = SCC  (School/College Shared Courses)     — orange badge
+//  T3 = DSC  (Department Shared Courses)         — purple badge
+//  T4 = PROG (Programme-Specific Courses)        — default grey
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Tier config
+var TIERS = {
+  1: { label:'T1 UCC',  name:'University Common',    color:'#117A7A', bg:'#EEF8F8', abbr:'UCC'  },
+  2: { label:'T2 SCC',  name:'School/College Shared', color:'#C85A00', bg:'#FFF4EE', abbr:'SCC'  },
+  3: { label:'T3 DSC',  name:'Department Shared',     color:'#6B21A8', bg:'#F5F0FF', abbr:'DSC'  },
+  4: { label:'T4 PROG', name:'Programme-Specific',    color:'#374151', bg:'#F9FAFB', abbr:'PROG' },
+};
+
+// Per-course tier stored in course object: c.tier (1-4), c.ownerSchool, c.ownerDept, c.ownerProgramme
+// For T1 courses, getUniversalKey(c) !== null — already handled
+// For T2/T3, we store the canonical code and owning unit
+
+function getCourseTier(c) {
+  if (getUniversalKey(c)) return 1;
+  return c.tier || 4;
+}
+
+function getTierBadgeHtml(tier) {
+  var t = TIERS[tier] || TIERS[4];
+  return '<span style="background:'+t.color+';color:white;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700;letter-spacing:0.3px">'+t.label+'</span>';
+}
+
+// ── Notification bell state ────────────────────────────────────────────────────
+var _notifications = [];
+var _notifUnread   = 0;
+
+function loadNotifications() {
+  var p = getProg();
+  var school = (p.school||'').trim();
+  var dept   = (p.dept||'').trim();
+  if (!school) return;
+  fetch(REGISTRY_BACKEND + '/api/notifications?school=' + encodeURIComponent(school)
+      + (dept ? '&dept=' + encodeURIComponent(dept) : ''))
+    .then(function(r){ return r.ok ? r.json() : []; })
+    .then(function(data) {
+      _notifications = data || [];
+      _notifUnread   = _notifications.filter(function(n){ return !n.read; }).length;
+      renderNotifBell();
+      if (_notifUnread > 0) renderNotifPanel();
+    })
+    .catch(function(){});
+}
+
+function renderNotifBell() {
+  var bell = document.getElementById('notif-bell');
+  if (!bell) return;
+  bell.innerHTML = '🔔' + (_notifUnread > 0
+    ? ' <span style="background:#c00;color:white;border-radius:50%;padding:1px 5px;font-size:10px;font-weight:700">'+_notifUnread+'</span>'
+    : '');
+  bell.title = _notifUnread > 0 ? _notifUnread + ' unread notification(s)' : 'No new notifications';
+}
+
+function renderNotifPanel() {
+  var panel = document.getElementById('notif-panel');
+  if (!panel) return;
+  if (!_notifications.length) {
+    panel.innerHTML = '<p style="color:var(--gray-500);font-size:12px;padding:12px">No notifications yet.</p>';
+    return;
+  }
+  panel.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #eee">'
+    + '<strong style="font-size:13px;color:var(--navy)">Registry Notifications</strong>'
+    + '<button onclick="markAllNotifsRead()" style="background:none;border:none;color:var(--teal);cursor:pointer;font-size:11px">Mark all read</button>'
+    + '</div>'
+    + _notifications.map(function(n) {
+        var bg = n.read ? '#fff' : (n.type==='BORROW'?'#fff8f0':n.type==='RECLASSIFY'?'#f8f0ff':'#f0f8ff');
+        var icon = n.type==='BORROW'?'📤':n.type==='RECLASSIFY'?'🔄':'📋';
+        var date = new Date(n.timestamp).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+        return '<div style="padding:10px 14px;border-bottom:1px solid #f0f0f0;background:'+bg+';cursor:pointer" onclick="markNotifRead('+n.id+')">'
+          + '<div style="display:flex;gap:8px;align-items:flex-start">'
+          + '<span style="font-size:16px">'+icon+'</span>'
+          + '<div style="flex:1"><div style="font-weight:'+(n.read?'400':'700')+';font-size:12px;color:var(--navy);margin-bottom:2px">'+n.title+'</div>'
+          + '<div style="font-size:11px;color:#555;line-height:1.4">'+n.message+'</div>'
+          + '<div style="font-size:10px;color:var(--gray-500);margin-top:3px">'+date+'</div></div>'
+          + (!n.read ? '<span style="background:var(--teal);color:white;border-radius:50%;width:8px;height:8px;display:inline-block;margin-top:3px;flex-shrink:0"></span>' : '')
+          + '</div></div>';
+      }).join('');
+}
+
+function toggleNotifPanel() {
+  var wrap = document.getElementById('notif-wrap');
+  if (!wrap) return;
+  var isOpen = wrap.style.display !== 'none';
+  wrap.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) renderNotifPanel();
+}
+
+function markNotifRead(id) {
+  fetch(REGISTRY_BACKEND + '/api/notifications/' + id + '/read', {method:'PATCH'})
+    .then(function(){ loadNotifications(); })
+    .catch(function(){});
+  _notifications = _notifications.map(function(n){ return n.id===id ? Object.assign({},n,{read:true}):n; });
+  _notifUnread   = _notifications.filter(function(n){ return !n.read; }).length;
+  renderNotifBell();
+  renderNotifPanel();
+}
+
+function markAllNotifsRead() {
+  var p = getProg();
+  fetch(REGISTRY_BACKEND + '/api/notifications/read-all', {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({school: p.school, dept: p.dept})
+  }).catch(function(){});
+  _notifications = _notifications.map(function(n){ return Object.assign({},n,{read:true}); });
+  _notifUnread = 0;
+  renderNotifBell();
+  renderNotifPanel();
+}
+
+// ── Cross-programme conflict detection ─────────────────────────────────────────
+function checkCourseConflictOnline(c, onResult) {
+  var p = getProg();
+  if (!c.name || getUniversalKey(c)) { onResult(null); return; }
+  fetch(REGISTRY_BACKEND + '/api/registry/check', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: c.name, code: c.code,
+      school: p.school, dept: p.dept, programme: p.name
+    })
+  })
+  .then(function(r){ return r.ok ? r.json() : null; })
+  .then(function(data){ onResult(data); })
+  .catch(function(){ onResult(null); });
+}
+
+// ── Show ownership dialogue when conflict detected ─────────────────────────────
+function showOwnershipDialogue(c, conflictData, onDecision) {
+  var p = getProg();
+  var conflicts = conflictData && conflictData.conflicts ? conflictData.conflicts : [];
+  if (!conflicts.length) { onDecision('own', null); return; }
+
+  // Build usage list
+  var usageLines = conflicts.map(function(r) {
+    var tier = TIERS[r.tier||4];
+    return '• ' + (r.programme||'Unknown Programme')
+      + ' (' + (r.school||'?') + ' / ' + (r.dept||'?') + ')'
+      + ' — ' + (r.code||'no code') + ' [' + (tier?tier.label:'T4') + ']';
+  }).join('\n');
+
+  var ownerConflict = conflicts[0];
+  var isCrossSchool = conflictData.isCrossSchool;
+  var isCrossDept   = conflictData.isCrossDept;
+  var suggestedTier = conflictData.suggestedTier || 4;
+
+  var msg = '⚠️  COURSE REGISTRY CONFLICT DETECTED\n\n'
+    + 'Course: "' + c.name + '"' + (c.code ? ' (' + c.code + ')' : '') + '\n'
+    + 'Your school/dept: ' + (p.school||'?') + ' / ' + (p.dept||'?') + '\n\n'
+    + 'This course already exists in the KIU registry:\n'
+    + usageLines + '\n\n'
+    + (isCrossSchool
+        ? '⚠️  CROSS-SCHOOL CONFLICT: This course belongs to a DIFFERENT school.\n'
+        : isCrossDept
+        ? '⚠️  CROSS-DEPT CONFLICT: This course exists in another department in your school.\n'
+        : '')
+    + '\nSuggested classification: Tier ' + suggestedTier
+    + ' (' + (TIERS[suggestedTier]||TIERS[4]).name + ')\n\n'
+    + 'What would you like to do?\n'
+    + '1 = BORROW — Use the existing course as-is (keeps owner\'s code and structure)\n'
+    + '2 = NEW VERSION — Create a separate programme-specific copy (T4)\n'
+    + '3 = RECLASSIFY — Request this be upgraded to a shared tier (T' + suggestedTier + ')\n\n'
+    + 'Enter 1, 2, or 3:';
+
+  var choice = prompt(msg, '1');
+  var decision = choice === '2' ? 'new' : choice === '3' ? 'reclassify' : 'borrow';
+
+  // Record the decision on the backend
+  fetch(REGISTRY_BACKEND + '/api/registry/borrow', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      courseCode:       c.code || '',
+      courseName:       c.name || '',
+      borrowerProgramme: p.name,
+      borrowerSchool:    p.school,
+      borrowerDept:      p.dept,
+      ownerProgramme:    ownerConflict.programme,
+      ownerSchool:       ownerConflict.school,
+      ownerDept:         ownerConflict.dept,
+      ownerCode:         ownerConflict.code,
+      developer:         p.hod || 'Unknown Developer',
+      decision:          decision,
+    })
+  }).catch(function(){});
+
+  // If borrowing, set canonical code and tier on this course
+  if (decision === 'borrow') {
+    c.code        = ownerConflict.code || c.code;
+    c.tier        = ownerConflict.tier || suggestedTier;
+    c.ownerSchool = ownerConflict.school;
+    c.ownerDept   = ownerConflict.dept;
+    c.ownerProg   = ownerConflict.programme;
+    toast('✅ Borrowing "' + c.name + '" from ' + (ownerConflict.school||'registry'), 'success');
+  } else if (decision === 'reclassify') {
+    c.tier = suggestedTier;
+    toast('🔄 Reclassification request sent for "' + c.name + '"', 'info');
+  } else {
+    c.tier = 4;
+    toast('📋 Creating new programme-specific version of "' + c.name + '"', 'info');
+  }
+
+  onDecision(decision, ownerConflict);
+}
+
+// ── Set tier on a course interactively ─────────────────────────────────────────
+function setCourseT2T3(courseId) {
+  var c = courses.find(function(x){ return x.id === courseId; });
+  if (!c) return;
+  var p = getProg();
+  var tierChoice = prompt(
+    'Set tier for: "' + c.name + '"\n\n'
+    + 'Current tier: T' + (c.tier||4) + '\n\n'
+    + '2 = School/College Shared (T2 SCC) — used across all depts in your school\n'
+    + '3 = Department Shared (T3 DSC) — used across programmes in your dept\n'
+    + '4 = Programme-Specific (T4 PROG) — unique to this programme\n\n'
+    + 'Enter 2, 3, or 4:', String(c.tier||4));
+  var tier = parseInt(tierChoice);
+  if (tier < 2 || tier > 4 || isNaN(tier)) return;
+  c.tier = tier;
+  if (tier === 2) { c.ownerSchool = p.school; }
+  if (tier === 3) { c.ownerSchool = p.school; c.ownerDept = p.dept; }
+  // Save ownership to backend
+  fetch(REGISTRY_BACKEND + '/api/ownership', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ courseCode:c.code, courseName:c.name,
+      ownerSchool:p.school, ownerDept:p.dept, ownerProgramme:p.name,
+      tier, developer:p.hod||'' })
+  }).catch(function(){});
+  renderCurriculum();
+  toast('✅ "' + c.name + '" set to Tier ' + tier + ' (' + TIERS[tier].name + ')', 'success');
+}
+
+// ── Run conflict check on all courses after import ─────────────────────────────
+async function runConflictCheckAll() {
+  var p = getProg();
+  if (!p.school) return;
+  var prog_courses = courses.filter(function(c){ return !getUniversalKey(c); });
+  if (!prog_courses.length) return;
+
+  toast('🔍 Checking ' + prog_courses.length + ' courses against KIU registry...', 'info');
+  var conflicts_found = 0;
+
+  for (var i = 0; i < prog_courses.length; i++) {
+    var c = prog_courses[i];
+    await new Promise(function(resolve) {
+      checkCourseConflictOnline(c, function(data) {
+        if (data && data.hasConflicts) {
+          conflicts_found++;
+          showOwnershipDialogue(c, data, function(decision) { resolve(); });
+        } else { resolve(); }
+      });
+    });
+  }
+
+  if (conflicts_found === 0) {
+    toast('✅ No cross-school/dept conflicts found in registry', 'success');
+  } else {
+    toast('✅ Conflict check complete — ' + conflicts_found + ' resolved', 'success');
+    saveProgrammeCourseUnits();
+    renderCurriculum();
+  }
+}
+
+// ── Shared and Borrowed Courses Table for Word doc ─────────────────────────────
+function buildSharedCoursesTable() {
+  var NAVY='0F2D4A', WHITE='FFFFFF';
+  var shared = courses.filter(function(c){ return (c.tier||4) < 4 && !getUniversalKey(c); });
+  if (!shared.length) return '';
+
+  var out = h2('Shared and Cross-Programme Course Units');
+  out += mkPara('The following course units in this programme are shared with other schools, colleges, or departments at Kampala International University. They carry a canonical code and structure that is consistent across all programmes that use them.', {before:0,after:120});
+
+  var CW = 14400;
+  var COLS = [1800, 3500, 2200, 2200, 1800, 1500, 1400];
+  var HDRS = ['Code','Course Name','Tier','Owner School/Dept','Used By','NH','Credits'];
+  var rows = mkRow(HDRS.map(function(h,i){
+    return mkCell(h, {w:COLS[i], fill:NAVY, bc:NAVY, bold:true, color:WHITE, sz:18, align:'center'});
+  }).join(''), {header:true});
+
+  shared.forEach(function(c) {
+    var tier  = TIERS[c.tier||4];
+    var nh    = getNH(c), cr = getCredits(c);
+    var owner = (c.ownerSchool||'—') + (c.ownerDept ? ' / '+c.ownerDept : '');
+    var fill  = c.tier===2?'FFF4EE':c.tier===3?'F5F0FF':'F9FAFB';
+    rows += mkRow([
+      mkCell(c.code||'',        {w:COLS[0],fill:fill,bc:'CCCCCC',sz:18}),
+      mkCell(stripMd(c.name),   {w:COLS[1],fill:fill,bc:'CCCCCC',sz:18,bold:true}),
+      mkCell(tier.label,        {w:COLS[2],fill:fill,bc:'CCCCCC',sz:18,align:'center',color:tier.color.replace('#','')}),
+      mkCell(owner,             {w:COLS[3],fill:fill,bc:'CCCCCC',sz:18}),
+      mkCell(c.ownerProg||p.name,{w:COLS[4],fill:fill,bc:'CCCCCC',sz:17,italic:true}),
+      mkCell(String(nh),        {w:COLS[5],fill:fill,bc:'CCCCCC',sz:18,align:'center',bold:true}),
+      mkCell(String(cr),        {w:COLS[6],fill:fill,bc:'CCCCCC',sz:18,align:'center',bold:true}),
+    ].join(''));
+  });
+
+  out += mkTable(rows, CW, COLS);
+  out += sp(1);
+  return out;
+}
+
+
+
 // SEMESTER ENFORCEMENT ENGINE - 600 NH / 60 Credits per semester
 var SEM_TARGET_NH = 600;
 var STD_COURSE_NH = 100;
@@ -3788,6 +4109,8 @@ async function extractAndFillWithRegistry() {
     // Auto-fill from registry & save
     setTimeout(function(){ autoFillFromRegistry().catch(function(){}); }, 800);
     saveProgrammeCourseUnits().catch(function(){});
+    // Run cross-registry conflict check after extraction
+    setTimeout(runConflictCheckAll, 1500);
     switchTab('curriculum');
 
   } catch(e) {
@@ -3826,6 +4149,8 @@ function loadTemplate(type) {
 function init() {
   setTimeout(insertDisclaimerBar, 600);
   assignCodes();
+  // Load registry notifications
+  setTimeout(loadNotifications, 2000);
   updateApiStatus();
   renderUniversalRegistry();
   // Auto-fill course details from shared registry
@@ -3846,5 +4171,12 @@ init();
 }
 </style>
 
+
+<!-- Notification Bell -->
+<div id="notif-wrap" style="position:fixed;top:10px;right:16px;z-index:9000;display:none">
+  <div id="notif-panel" style="background:white;border:1px solid #ddd;border-radius:8px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.18);width:380px;max-height:480px;overflow-y:auto;
+    margin-top:40px"></div>
+</div>
 </body>
 </html>

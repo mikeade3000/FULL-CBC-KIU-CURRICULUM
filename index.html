@@ -4897,6 +4897,8 @@ async function runRegistryAudit(filter) {
   var el = document.getElementById('audit-results');
   var st = document.getElementById('audit-status');
   if (!el) return;
+  // Reset resolve queue on each audit run
+  _auditResolveQueue = [];
 
   el.innerHTML = '<div style="text-align:center;padding:30px"><span class="spin" style="display:inline-block;width:24px;height:24px;border:3px solid var(--teal);border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite"></span><div style="margin-top:10px;font-size:13px;color:var(--gray-500)">Scanning KIU registry...</div></div>';
   if (st) st.textContent = 'Fetching data...';
@@ -4909,6 +4911,10 @@ async function runRegistryAudit(filter) {
     _auditData = data;
 
     if (st) st.textContent = 'Registry: ' + data.registrySize + ' courses | ' + data.total + ' conflicts found';
+
+    // Get recently resolved items from session
+    var recentlyResolved = [];
+    try { recentlyResolved = JSON.parse(sessionStorage.getItem('kiu_resolved')||'[]'); } catch(e){}
 
     if (!data.conflicts || data.conflicts.length === 0) {
       el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--green)">'
@@ -5000,32 +5006,128 @@ async function runRegistryAudit(filter) {
 
 async function resolveConflict(nameKey, canonicalCode, dh, sh, ah, oh, tier) {
   var p = getProg();
-  var confirm_msg = 'Set "' + nameKey + '" canonical values to:\n'
-    + '  Code: ' + canonicalCode + '\n'
-    + '  NH: ' + (dh+sh+ah+oh) + ' (DH:' + dh + ' SH:' + sh + ' AH:' + ah + ' OH:' + oh + ')\n'
-    + '  Tier: T' + tier + '\n\n'
-    + 'This will update ALL entries for this course in the registry.\n'
-    + 'All developers using the app will be notified to update their programmes.\n\n'
-    + 'Proceed?';
+  var nh = dh+sh+ah+oh;
+  var tierLabel = (TIERS[tier]||TIERS[4]).name;
+  var confirm_msg = '\u26a0\ufe0f SET CANONICAL VALUES FOR: "' + nameKey + '"\n\n'
+    + 'Canonical code:     ' + canonicalCode + '\n'
+    + 'Canonical NH:       ' + nh + ' (DH:'+dh+' SH:'+sh+' AH:'+ah+' OH:'+oh+')\n'
+    + 'Canonical tier:     T'+tier+' \u2014 '+tierLabel+'\n\n'
+    + 'EFFECTS:\n'
+    + '\u2022 ALL registry entries for this course will be updated\n'
+    + '\u2022 Your currently loaded programme will be updated immediately\n'
+    + '\u2022 ALL saved programmes on this device will be updated\n'
+    + '\u2022 All developers using the app will be notified\n'
+    + '\u2022 Future uploads will automatically use these canonical values\n\n'
+    + 'This CANNOT be undone. Proceed?';
   if (!confirm(confirm_msg)) return;
 
+  var statusEl = document.getElementById('audit-status');
+  if (statusEl) statusEl.textContent = 'Resolving...';
+
   try {
+    // 1. Update backend registry
     var resp = await fetch(REGISTRY_BACKEND + '/api/audit/resolve', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
-        nameKey, canonicalCode, canonicalTier: tier,
+        nameKey: nameKey,
+        canonicalCode: canonicalCode,
+        canonicalTier: tier,
         canonicalDH: dh, canonicalSH: sh, canonicalAH: ah, canonicalOH: oh,
-        resolver: p.hod || p.school || 'Developer',
+        resolver: p.hod || p.school || p.name || 'Developer',
       })
     });
+    if (!resp.ok) throw new Error('Server error ' + resp.status);
     var result = await resp.json();
-    toast('\u2705 Resolved! ' + result.updated + ' registry entries updated. All developers notified.', 'success');
-    loadNotifications(); // refresh notif bell
-    setTimeout(runRegistryAudit, 1000); // re-run audit
+
+    // 2. Apply canonical values to CURRENTLY LOADED programme
+    var localUpdated = applyCanonicalToLoadedProgramme(nameKey, canonicalCode, dh, sh, ah, oh, tier);
+
+    // 3. Apply to ALL locally saved programmes
+    var savedUpdated = applyCanonicalToSavedProgrammes(nameKey, canonicalCode, dh, sh, ah, oh, tier);
+
+    // 4. Re-save updated courses to backend registry
+    await saveProgrammeCourseUnits().catch(function(){});
+
+    // 5. UI updates
+    loadNotifications();
+    assignCodes();
+    renderCurriculum();
+    renderGenerateTab();
+
+    var msg = '\u2705 RESOLVED: "' + nameKey + '"\n'
+      + result.updated + ' registry entries updated\n'
+      + localUpdated + ' courses fixed in current programme\n'
+      + savedUpdated + ' courses fixed in saved programmes\n'
+      + 'All developers notified.';
+    toast('\u2705 Resolved! ' + result.updated + ' registry + ' + localUpdated + ' local courses updated', 'success');
+
+    if (statusEl) statusEl.textContent = result.updated + ' registry entries updated. Conflict resolved.';
+    setTimeout(runRegistryAudit, 1200);
   } catch(e) {
     toast('\u274c Resolve failed: ' + e.message, 'error');
+    if (statusEl) statusEl.textContent = 'Error: ' + e.message;
+    console.error('resolveConflict error:', e);
   }
+}
+
+// Apply canonical values to the currently loaded programme in memory
+function applyCanonicalToLoadedProgramme(nameKey, code, dh, sh, ah, oh, tier) {
+  var updated = 0;
+  courses.forEach(function(c) {
+    var k = (c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+    if (k !== nameKey) return;
+    if (getUniversalKey(c)) return; // never touch UCC
+    c.code  = code;
+    c.tier  = tier;
+    c.DH = dh; c.SH = sh; c.AH = ah; c.OH = oh;
+    // Update prefix from canonical code (first part before space)
+    var codeParts = code.split(' ');
+    if (codeParts.length > 1) c.prefix = codeParts[0];
+    updated++;
+  });
+  return updated;
+}
+
+// Apply canonical values to ALL programmes saved in localStorage
+function applyCanonicalToSavedProgrammes(nameKey, code, dh, sh, ah, oh, tier) {
+  var progs = getAllProgrammes();
+  var totalUpdated = 0;
+  progs.forEach(function(prog) {
+    var progCourses = prog.courses || [];
+    var changed = false;
+    progCourses.forEach(function(c) {
+      var k = (c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+      if (k !== nameKey) return;
+      c.code = code; c.tier = tier;
+      c.DH = dh; c.SH = sh; c.AH = ah; c.OH = oh;
+      var cp = code.split(' ');
+      if (cp.length > 1) c.prefix = cp[0];
+      totalUpdated++;
+      changed = true;
+    });
+    if (changed) {
+      // Push updated programme to backend
+      var snapLight = {
+        id: prog.id, savedAt: prog.savedAt, meta: prog.meta,
+        courses: progCourses.map(function(c) {
+          return { id:c.id,year:c.year,sem:c.sem,prefix:c.prefix,name:c.name,
+                   code:c.code,type:c.type,DH:c.DH,SH:c.SH,AH:c.AH,OH:c.OH,
+                   elective:!!c.elective,tier:c.tier||4,borrowed:!!c.borrowed,
+                   locked:!!c.locked,ownerCode:c.ownerCode||'',
+                   ownerSchool:c.ownerSchool||'',ownerDept:c.ownerDept||'' };
+        }),
+        courseCount: progCourses.length,
+      };
+      fetch(REGISTRY_BACKEND+'/api/programmes',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(snapLight)
+      }).catch(function(){});
+    }
+  });
+  saveProgrammes(progs);
+  renderProgrammesList();
+  return totalUpdated;
 }
 
 function ignoreConflict(idx) {
@@ -5063,19 +5165,43 @@ async function exportAuditReport() {
 // ── Auto-audit before save ─────────────────────────────────────────────────────
 async function auditBeforeSave() {
   var p = getProg();
-  if (!p.school) return; // skip if no school set
+  if (!p.school) return true; // skip if no school set
   var prog_courses = courses.filter(function(c){ return !getUniversalKey(c); });
   var issues = [];
-  // Check within-programme duplicates
-  var seenNames = {};
+
+  // 1. Within-programme duplicate names AND codes
+  var seenNames = {}, seenCodes = {};
   prog_courses.forEach(function(c) {
     var k = (c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-    if (k.length > 3 && seenNames[k]) issues.push('Duplicate course name: "' + c.name + '"');
+    if (k.length > 3 && seenNames[k]) issues.push('\u26a0 Duplicate course name: "' + c.name + '"');
     else seenNames[k] = true;
+    if (c.code && seenCodes[c.code]) issues.push('\u26a0 Duplicate course code: ' + c.code);
+    else if (c.code) seenCodes[c.code] = true;
   });
+
+  // 2. Auto-correct any UCC with wrong NH before saving
+  var uccFixed = 0;
+  courses.forEach(function(c) {
+    var ukey = getUniversalKey(c);
+    if (!ukey || !UNIVERSAL[ukey]) return;
+    var def = UNIVERSAL[ukey];
+    var expectedNH = def.DH + def.SH + def.AH + def.OH;
+    var actualNH   = (c.DH||0) + (c.SH||0) + (c.AH||0) + (c.OH||0);
+    if (actualNH !== expectedNH) {
+      c.DH = def.DH; c.SH = def.SH; c.AH = def.AH; c.OH = def.OH;
+      uccFixed++;
+    }
+  });
+  if (uccFixed > 0) issues.push('\u2139 Auto-corrected ' + uccFixed + ' UCC course(s) to canonical NH values');
+
   if (issues.length > 0) {
-    var proceed = confirm('\u26a0 Issues detected before saving:\n\n' + issues.join('\n') + '\n\nSave anyway?');
-    if (!proceed) return false;
+    var hasErrors  = issues.some(function(i){ return i.startsWith('\u26a0 Dup'); });
+    var msg = (hasErrors ? '\u26a0 Issues detected before saving:\n\n' : '\u2139 Pre-save corrections:\n\n')
+      + issues.join('\n') + '\n\nSave anyway?';
+    if (hasErrors) {
+      var proceed = confirm(msg);
+      if (!proceed) return false;
+    }
   }
   return true;
 }

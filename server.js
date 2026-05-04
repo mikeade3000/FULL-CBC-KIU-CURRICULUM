@@ -246,6 +246,13 @@ app.post('/api/course-detail', (req, res) => {
 });
 
 // ── Programmes ─────────────────────────────────────────────────────────────────
+app.get('/api/programmes/:id', (req, res) => {
+  const progs = readJSON('programmes.json', []);
+  const prog  = progs.find(p => String(p.id) === req.params.id);
+  if (prog) res.json(prog);
+  else res.status(404).json({ error: 'not found' });
+});
+
 app.get('/api/programmes', (req, res) => {
   const p = readJSON('programmes.json',[]);
   res.json(p.map(x=>({ id:x.id, name:x.meta?.name, abbr:x.meta?.abbr,

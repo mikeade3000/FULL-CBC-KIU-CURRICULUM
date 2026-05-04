@@ -1,16 +1,19 @@
 {
-  "name": "kiu-cbe-api",
-  "version": "1.0.0",
-  "description": "KIU CBE Programme Generator Backend API",
+  "name": "kiu-cbe-backend",
+  "version": "2.0.0",
+  "description": "KIU CBE Programme Generator — Persistent PostgreSQL Backend",
   "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node --watch server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "node-fetch": "^2.7.0"
-  },
-  "engines": { "node": ">=18" }
+    "express": "^4.18.3",
+    "node-fetch": "^2.7.0",
+    "pg": "^8.11.5"
+  }
 }

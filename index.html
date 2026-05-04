@@ -5245,17 +5245,19 @@ async function syncLocalRegistryToBackend() {
 function init() {
   setTimeout(insertDisclaimerBar, 600);
   assignCodes();
-  // Load registry notifications
   setTimeout(loadNotifications, 2000);
   setTimeout(pullAllLockedContent, 3000);
-  // Re-sync local registry to backend (recovers after Render restart)
   setTimeout(syncLocalRegistryToBackend, 4000);
   updateApiStatus();
   renderUniversalRegistry();
-  // Auto-fill course details from shared registry
   setTimeout(function() {
     autoFillFromRegistry().catch(function(){});
   }, 1500);
+
+  // Keep Render web service warm — pings every 13 minutes  ← ADD THIS
+  setInterval(function() {                                   // ← ADD THIS
+    fetch(REGISTRY_BACKEND + '/api/health').catch(function(){}); // ← ADD THIS
+  }, 13 * 60 * 1000);                                        // ← ADD THIS
 }
 
 init();

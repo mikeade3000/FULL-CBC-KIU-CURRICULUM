@@ -3069,11 +3069,31 @@ async function saveCurrentProgramme() {
     toast('✅ "' + p.name + '" saved locally + synced to cloud! (' + n + ' units)', 'success');
   }).catch(function(){ toast('✅ "' + p.name + '" saved!', 'success'); });
 }
-function loadProgramme(id) {
+async function loadProgramme(id) {
   var progs = getAllProgrammes();
   var prog  = progs.find(function(p){ return p.id === id; });
-  if (!prog) return;
-  var m = prog.meta;
+  if (!prog) {
+    toast('Programme not found locally — trying cloud...', 'info');
+    try {
+      var r = await fetch(REGISTRY_BACKEND + '/api/programmes/' + id);
+      if (r.ok) prog = await r.json();
+    } catch(e) {}
+    if (!prog) { toast('❌ Programme not found', 'error'); return; }
+  }
+  // If only summary (no courses array), fetch full from backend
+  if (!prog.courses || prog.courses.length === 0) {
+    try {
+      var r2 = await fetch(REGISTRY_BACKEND + '/api/programmes/' + id);
+      if (r2.ok) { var full = await r2.json(); if (full && full.courses) prog = full; }
+    } catch(e) {}
+  }
+  // Normalise meta
+  if (!prog.meta && (prog.name || prog.abbr)) {
+    prog.meta = { name: prog.name||'', abbr: prog.abbr||'', school: prog.school||'',
+                  dept: prog.dept||'', level: prog.level||7, years: prog.years||3,
+                  mode: prog.mode||'Full-time', prefix: prog.prefix||'' };
+  }
+  var m = prog.meta || prog;
   function sv(elId, val){ var el=document.getElementById(elId); if(el&&val!==undefined) el.value=val; }
   sv('p-name',m.name); sv('p-award',m.award); sv('p-abbr',m.abbr);
   sv('p-prefix',m.prefix); sv('p-school',m.school); sv('p-dept',m.dept);
@@ -3123,10 +3143,20 @@ async function syncProgrammesFromCloud() {
     var added = 0, updated = 0;
     fullProgs.forEach(function(bp) {
       if (!bp.id) return;
+      // Normalise: if no meta object, create one from top-level fields
+      if (!bp.meta && (bp.name || bp.abbr)) {
+        bp.meta = { name: bp.name||'', abbr: bp.abbr||'', school: bp.school||'',
+                    dept: bp.dept||'', level: bp.level||7, years: bp.years||3,
+                    mode: bp.mode||'Full-time', prefix: bp.prefix||'', award: bp.award||'' };
+      }
       var li = local.findIndex(function(p){ return p.id === bp.id; });
       if (li >= 0) {
         // Update if cloud version is newer
         if (bp.savedAt && local[li].savedAt && bp.savedAt > local[li].savedAt) {
+          // Preserve local courses/sectionContent if cloud version is summary only
+          if (!bp.courses && local[li].courses) bp.courses = local[li].courses;
+          if (!bp.sectionContent && local[li].sectionContent) bp.sectionContent = local[li].sectionContent;
+          if (!bp.courseDetails && local[li].courseDetails) bp.courseDetails = local[li].courseDetails;
           local[li] = bp; updated++;
         }
       } else {
@@ -3149,6 +3179,15 @@ function renderProgrammesList() {
   var el = document.getElementById('programmes-list');
   if (!el) return;
   var progs = getAllProgrammes();
+  // Normalise any programmes that are missing meta structure
+  progs = progs.map(function(p) {
+    if (!p.meta && (p.name || p.abbr)) {
+      p.meta = { name: p.name||'', abbr: p.abbr||'', school: p.school||'',
+                 dept: p.dept||'', level: p.level||7, years: p.years||3,
+                 mode: p.mode||'Full-time', prefix: p.prefix||'' };
+    }
+    return p;
+  }).filter(function(p){ return p.id; }); // remove any corrupt entries
   // Show local programmes IMMEDIATELY
   _renderProgrammesListHTML(progs);
   // Then also check backend for programmes from other browsers/computers
@@ -3183,11 +3222,16 @@ function _renderProgrammesListHTML(progs) {
   }
   el.innerHTML = progs.map(function(p) {
     var date    = new Date(p.savedAt).toLocaleDateString('en-UG',{day:'2-digit',month:'short',year:'numeric'});
+    // Handle both full snap (p.meta.name) and backend summary (p.name)
+    var _meta   = p.meta || p;
+    var _name   = (_meta.name || p.name || 'Unnamed').trim();
+    var _abbr   = _meta.abbr || p.abbr || '';
+    var _courses = p.courses || [];
     var secDone = SECTIONS.filter(function(s){ return p.sectionContent&&p.sectionContent[s.key]&&p.sectionContent[s.key].done; }).length;
-    var cDone   = (p.courses||[]).filter(function(c){ return p.courseDetails&&p.courseDetails[c.code]&&p.courseDetails[c.code].done; }).length;
+    var cDone   = _courses.filter(function(c){ return p.courseDetails&&p.courseDetails[c.code]&&p.courseDetails[c.code].done; }).length;
     return '<div style="border:1.5px solid var(--gray-200);border-radius:6px;padding:12px 14px;margin-bottom:8px;background:white;display:flex;align-items:center;gap:12px;">'
-      + '<div style="flex:1"><div style="font-weight:700;color:var(--navy);font-size:13px">' + (p.meta&&p.meta.name||'Unnamed') + '</div>'
-      + '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' + (p.meta&&p.meta.abbr||'') + ' \u00b7 ' + (p.courses||[]).length + ' courses \u00b7 ' + secDone + '/' + SECTIONS.length + ' sections \u00b7 Saved ' + date + '</div></div>'
+      + '<div style="flex:1"><div style="font-weight:700;color:var(--navy);font-size:13px">' + esc(_name) + '</div>'
+      + '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' + _abbr + ' \u00b7 ' + (p.courses||[]).length + ' courses \u00b7 ' + secDone + '/' + SECTIONS.length + ' sections \u00b7 Saved ' + date + '</div></div>'
       + '<div style="display:flex;gap:6px">'
       + '<button class="btn btn-teal btn-xs" onclick="loadProgramme(' + p.id + ')">Load</button>'
       + '<button class="btn btn-gold btn-xs" onclick="downloadWordDocFor(' + p.id + ')">\ud83d\udcc4 Word</button>'

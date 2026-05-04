@@ -64,18 +64,21 @@ pool.on('error', function(err) {
         UNIQUE(code, programme)
       );
       CREATE TABLE IF NOT EXISTS programmes (
-        id           BIGINT PRIMARY KEY,
-        name         TEXT DEFAULT '',
-        abbr         TEXT DEFAULT '',
-        school       TEXT DEFAULT '',
-        dept         TEXT DEFAULT '',
-        meta         JSONB DEFAULT '{}',
-        courses      JSONB DEFAULT '[]',
-        section_done JSONB DEFAULT '{}',
-        course_done  JSONB DEFAULT '{}',
-        course_count INTEGER DEFAULT 0,
-        saved_at     TIMESTAMPTZ DEFAULT NOW()
-      );
+  id           BIGINT PRIMARY KEY,
+  name         TEXT DEFAULT '',
+  abbr         TEXT DEFAULT '',
+  school       TEXT DEFAULT '',
+  dept         TEXT DEFAULT '',
+  meta         JSONB DEFAULT '{}',
+  courses      JSONB DEFAULT '[]',
+  section_done JSONB DEFAULT '{}',
+  course_done  JSONB DEFAULT '{}',
+  course_count INTEGER DEFAULT 0,
+  section_content JSONB DEFAULT '{}',   -- ← ADD THIS LINE
+  saved_at     TIMESTAMPTZ DEFAULT NOW()
+);
+-- ADD THIS LINE after the CREATE TABLE block:
+ALTER TABLE programmes ADD COLUMN IF NOT EXISTS section_content JSONB DEFAULT '{}';
       CREATE TABLE IF NOT EXISTS course_details (
         id          SERIAL PRIMARY KEY,
         code        TEXT NOT NULL DEFAULT '',
@@ -443,12 +446,14 @@ app.post('/api/course-detail', async (req, res) => {
 app.get('/api/programmes', async (req, res) => {
   try {
     const r = await q(
-      'SELECT id,name,abbr,school,dept,meta,courses,section_done,course_done,course_count,saved_at FROM programmes ORDER BY saved_at DESC'
+      'SELECT id,name,abbr,school,dept,meta,courses,section_done,course_done,course_count,section_content,saved_at FROM programmes ORDER BY saved_at DESC'
     );
     res.json(r.rows.map(p => ({
       id:p.id, name:p.name, abbr:p.abbr, school:p.school, dept:p.dept,
       meta:p.meta, courses:p.courses, sectionDone:p.section_done,
-      courseDone:p.course_done, courseCount:p.course_count, savedAt:p.saved_at
+      courseDone:p.course_done, courseCount:p.course_count, 
+      savedAt:p.saved_at,
+      sectionContent: p.section_content || {}   // ← ADD THIS
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -458,9 +463,13 @@ app.get('/api/programmes/:id', async (req, res) => {
     const r = await q('SELECT * FROM programmes WHERE id=$1', [req.params.id]);
     if (!r.rows.length) return res.status(404).json({ error: 'not found' });
     const p = r.rows[0];
-    res.json({ id:p.id, name:p.name, abbr:p.abbr, school:p.school, dept:p.dept,
-               meta:p.meta, courses:p.courses, sectionDone:p.section_done,
-               courseDone:p.course_done, courseCount:p.course_count, savedAt:p.saved_at });
+    res.json({ 
+      id:p.id, name:p.name, abbr:p.abbr, school:p.school, dept:p.dept,
+      meta:p.meta, courses:p.courses, sectionDone:p.section_done,
+      courseDone:p.course_done, courseCount:p.course_count, 
+      savedAt:p.saved_at,
+      sectionContent: p.section_content || {}   // ← ADD THIS
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -469,18 +478,21 @@ app.post('/api/programmes', async (req, res) => {
   if (!p?.id) return res.status(400).json({ error: 'id required' });
   const meta    = p.meta || {};
   const courses = p.courses || [];
+  const sectionContent = p.sectionContent || {};
   try {
     await q(
-      `INSERT INTO programmes (id,name,abbr,school,dept,meta,courses,section_done,course_done,course_count,saved_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      `INSERT INTO programmes 
+         (id,name,abbr,school,dept,meta,courses,section_done,course_done,course_count,section_content,saved_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT(id) DO UPDATE SET
          name=$2,abbr=$3,school=$4,dept=$5,meta=$6,courses=$7,
-         section_done=$8,course_done=$9,course_count=$10,saved_at=$11`,
+         section_done=$8,course_done=$9,course_count=$10,section_content=$11,saved_at=$12`,
       [String(p.id), meta.name||p.name||'', meta.abbr||p.abbr||'',
        meta.school||p.school||'', meta.dept||p.dept||'',
        JSON.stringify(meta), JSON.stringify(courses),
        JSON.stringify(p.sectionDone||{}), JSON.stringify(p.courseDone||{}),
        p.courseCount||courses.length,
+       JSON.stringify(sectionContent),
        p.savedAt ? new Date(p.savedAt) : new Date()]
     );
     res.json({ saved: true });

@@ -91,9 +91,16 @@ function initDB() {
         from_school    TEXT,
         from_programme TEXT,
         developer      TEXT,
-        read           BOOLEAN DEFAULT FALSE,
+        is_read        BOOLEAN DEFAULT FALSE,
         created_at     TIMESTAMPTZ DEFAULT NOW()
       );
+      -- Migrate: rename 'read' to 'is_read' if old column exists
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='notifications' AND column_name='read') THEN
+          ALTER TABLE notifications RENAME COLUMN "read" TO is_read;
+        END IF;
+      END $$;
       CREATE TABLE IF NOT EXISTS borrows (
         id               BIGINT PRIMARY KEY,
         course_code      TEXT DEFAULT '',
@@ -161,7 +168,7 @@ app.get('/api/health', async (req, res) => {
   try {
     const [rc, nc, pc] = await Promise.all([
       q('SELECT COUNT(*) FROM course_registry'),
-      q('SELECT COUNT(*) FROM notifications WHERE read=false'),
+      q('SELECT COUNT(*) FROM notifications WHERE is_read=false'),
       q('SELECT COUNT(*) FROM programmes'),
     ]);
     res.json({
@@ -348,7 +355,7 @@ app.get('/api/notifications', async (req, res) => {
       id:n.id, type:n.type, title:n.title, message:n.message,
       forSchool:n.for_school, forDept:n.for_dept, fromSchool:n.from_school,
       fromProgramme:n.from_programme, developer:n.developer,
-      read:n.read, timestamp:n.created_at
+      read:n.is_read, timestamp:n.created_at
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -368,7 +375,7 @@ app.post('/api/notifications', async (req, res) => {
 
 app.patch('/api/notifications/:id/read', async (req, res) => {
   try {
-    await q('UPDATE notifications SET read=true WHERE id=$1', [req.params.id]);
+    await q('UPDATE notifications SET is_read=true WHERE id=$1', [req.params.id]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -376,8 +383,8 @@ app.patch('/api/notifications/:id/read', async (req, res) => {
 app.patch('/api/notifications/read-all', async (req, res) => {
   try {
     const { school } = req.body || {};
-    if (school) await q('UPDATE notifications SET read=true WHERE for_school=$1 OR for_school IS NULL',[school]);
-    else        await q('UPDATE notifications SET read=true');
+    if (school) await q('UPDATE notifications SET is_read=true WHERE for_school=$1 OR for_school IS NULL',[school]);
+    else        await q('UPDATE notifications SET is_read=true');
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

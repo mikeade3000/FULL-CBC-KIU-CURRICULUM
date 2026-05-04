@@ -3059,10 +3059,29 @@ async function saveCurrentProgramme() {
   saveProgrammes(progs);
   renderProgrammesList();
 
-  // Also save to Render backend for cross-browser/cross-computer access
+  // Save LIGHTWEIGHT version to backend (no AI text content - too large)
+  var snapLight = {
+    id:      snap.id,
+    savedAt: snap.savedAt,
+    meta:    snap.meta,
+    courses: (snap.courses || []).map(function(c) {
+      return { id:c.id, year:c.year, sem:c.sem, prefix:c.prefix, name:c.name,
+               code:c.code, type:c.type, DH:c.DH, SH:c.SH, AH:c.AH, OH:c.OH,
+               elective:!!c.elective, tier:c.tier||4, borrowed:!!c.borrowed,
+               locked:!!c.locked, ownerCode:c.ownerCode||'',
+               ownerSchool:c.ownerSchool||'', ownerDept:c.ownerDept||'' };
+    }),
+    sectionDone: Object.fromEntries ? Object.fromEntries(
+      Object.entries(snap.sectionContent || {}).map(function(e){ return [e[0], !!(e[1]&&e[1].done)]; })
+    ) : {},
+    courseDone: Object.fromEntries ? Object.fromEntries(
+      Object.keys(snap.courseDetails || {}).map(function(k){ return [k, !!(snap.courseDetails[k]&&snap.courseDetails[k].done)]; })
+    ) : {},
+    courseCount: (snap.courses||[]).length,
+  };
   fetch(REGISTRY_BACKEND + '/api/programmes', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(snap)
+    body: JSON.stringify(snapLight)
   }).catch(function(){});
 
   saveProgrammeCourseUnits().then(function(n){
@@ -3231,7 +3250,7 @@ function _renderProgrammesListHTML(progs) {
     var cDone   = _courses.filter(function(c){ return p.courseDetails&&p.courseDetails[c.code]&&p.courseDetails[c.code].done; }).length;
     return '<div style="border:1.5px solid var(--gray-200);border-radius:6px;padding:12px 14px;margin-bottom:8px;background:white;display:flex;align-items:center;gap:12px;">'
       + '<div style="flex:1"><div style="font-weight:700;color:var(--navy);font-size:13px">' + esc(_name) + '</div>'
-      + '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' + _abbr + ' \u00b7 ' + (p.courses||[]).length + ' courses \u00b7 ' + secDone + '/' + SECTIONS.length + ' sections \u00b7 Saved ' + date + '</div></div>'
+      + '<div style="font-size:11px;color:var(--gray-500);margin-top:2px">' + _abbr + ' \u00b7 ' + _courses.length + ' courses \u00b7 ' + secDone + '/' + SECTIONS.length + ' sections \u00b7 Saved ' + date + '</div></div>'
       + '<div style="display:flex;gap:6px">'
       + '<button class="btn btn-teal btn-xs" onclick="loadProgramme(' + p.id + ')">Load</button>'
       + '<button class="btn btn-gold btn-xs" onclick="downloadWordDocFor(' + p.id + ')">\ud83d\udcc4 Word</button>'
@@ -4866,6 +4885,13 @@ function loadTemplate(type) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 var _auditData = null;
+var _auditResolveQueue = [];
+
+async function _resolveFromQueue(idx) {
+  var item = _auditResolveQueue[idx];
+  if (!item) return;
+  await resolveConflict(item.nameKey, item.code, item.dh, item.sh, item.ah, item.oh, item.tier);
+}
 
 async function runRegistryAudit(filter) {
   var el = document.getElementById('audit-results');
@@ -4950,8 +4976,11 @@ async function runRegistryAudit(filter) {
       html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
       conflict.entries.forEach(function(e, ei) {
         var nh = (e.DH||0)+(e.SH||0)+(e.AH||0)+(e.OH||0);
-        html += '<button class="btn btn-sm" onclick="resolveConflict(' + JSON.stringify(conflict.nameKey) + ',' + JSON.stringify(e.code||'') + ',' + (e.DH||0) + ',' + (e.SH||0) + ',' + (e.AH||0) + ',' + (e.OH||0) + ',' + (e.tier||4) + ')" '
-          + 'style="font-size:10px;background:#0F2D4A;color:white" title="Set this as the canonical version">'
+        // Store conflict data in global array to avoid JSON.stringify in onclick
+        var resolveIdx = _auditResolveQueue.length;
+        _auditResolveQueue.push({ nameKey:conflict.nameKey, code:e.code||'', dh:e.DH||0, sh:e.SH||0, ah:e.AH||0, oh:e.OH||0, tier:e.tier||4 });
+        html += '<button class="btn btn-sm" onclick="_resolveFromQueue(' + resolveIdx + ')" '
+          + 'style="font-size:10px;background:#0F2D4A;color:white;margin-bottom:4px" title="Set this as the canonical version">'
           + '✓ Use ' + esc(e.programme||'?') + ' version (' + esc(e.code||'?') + ', ' + nh + ' NH)'
           + '</button>';
       });

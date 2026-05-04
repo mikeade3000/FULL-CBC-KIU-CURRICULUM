@@ -1,16 +1,20 @@
 services:
   - type: web
-    name: kiu-cbe-api
-    env: node
+    name: kiu-cbe-backend
+    runtime: node
     plan: free
     buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: OPENROUTER_API_KEY
-        sync: false
-      - key: DATA_DIR
-        value: ./data
-    disk:
-      name: kiu-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
+        sync: false          # set manually in Render dashboard
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kiu-cbe-db
+          property: connectionString
+
+databases:
+  - name: kiu-cbe-db
+    plan: free
+    databaseName: kiu_cbe
+    user: kiu_admin

@@ -558,3 +558,31 @@ app.listen(PORT, () => {
   console.log(`OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? 'SET ✅' : 'NOT SET ⚠️'}`);
   initDB();
 });
+
+// ── Ownership endpoint (used by app for T2/T3 course ownership) ───────────────
+app.get('/api/ownership', async (req, res) => {
+  try {
+    const r = await q(
+      'SELECT code, name, school AS "ownerSchool", dept AS "ownerDept", programme AS "ownerProgramme", tier, developer, updated_at AS "updatedAt" FROM course_registry WHERE tier < 4 ORDER BY tier, name'
+    );
+    // Return as object keyed by normalised name
+    const result = {};
+    r.rows.forEach(row => {
+      const key = (row.code || row.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      result[key] = row;
+    });
+    res.json(result);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/ownership', async (req, res) => {
+  const { courseCode, courseName, ownerSchool, ownerDept, ownerProgramme, tier, developer } = req.body;
+  try {
+    await q(
+      `UPDATE course_registry SET tier=$1, owner_school=$2, owner_dept=$3, updated_at=NOW()
+       WHERE code=$4 OR lower(name)=lower($5)`,
+      [tier || 3, ownerSchool || '', ownerDept || '', courseCode || '', courseName || '']
+    );
+    res.json({ saved: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});

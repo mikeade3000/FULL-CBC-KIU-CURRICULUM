@@ -3059,17 +3059,38 @@ async function saveCurrentProgramme() {
   saveProgrammes(progs);
   renderProgrammesList();
 
-  // Save LIGHTWEIGHT version to backend (no AI text content - too large)
-  var snapLight = {
-    id:      snap.id,
-    savedAt: snap.savedAt,
-    meta:    snap.meta,
-    courses: (snap.courses || []).map(function(c) {
-      return { id:c.id, year:c.year, sem:c.sem, prefix:c.prefix, name:c.name,
-               code:c.code, type:c.type, DH:c.DH, SH:c.SH, AH:c.AH, OH:c.OH,
-               elective:!!c.elective, tier:c.tier||4, borrowed:!!c.borrowed,
-               locked:!!c.locked, ownerCode:c.ownerCode||'',
-               ownerSchool:c.ownerSchool||'', ownerDept:c.ownerDept||'' };
+  // BEFORE — snapLight missing sectionContent:
+var snapLight = {
+  id:      snap.id,
+  savedAt: snap.savedAt,
+  meta:    snap.meta,
+  courses: (snap.courses || []).map(function(c) { ... }),
+  sectionDone: ...,
+  courseDone:  ...,
+  courseCount: ...,
+};
+
+// AFTER — add sectionContent:
+var snapLight = {
+  id:      snap.id,
+  savedAt: snap.savedAt,
+  meta:    snap.meta,
+  courses: (snap.courses || []).map(function(c) {
+    return { id:c.id, year:c.year, sem:c.sem, prefix:c.prefix, name:c.name,
+             code:c.code, type:c.type, DH:c.DH, SH:c.SH, AH:c.AH, OH:c.OH,
+             elective:!!c.elective, tier:c.tier||4, borrowed:!!c.borrowed,
+             locked:!!c.locked, ownerCode:c.ownerCode||'',
+             ownerSchool:c.ownerSchool||'', ownerDept:c.ownerDept||'' };
+  }),
+  sectionContent: snap.sectionContent,   // ← ADD THIS LINE
+  sectionDone: Object.fromEntries ? Object.fromEntries(
+    Object.entries(snap.sectionContent || {}).map(function(e){ return [e[0], !!(e[1]&&e[1].done)]; })
+  ) : {},
+  courseDone: Object.fromEntries ? Object.fromEntries(
+    Object.keys(snap.courseDetails || {}).map(function(k){ return [k, !!(snap.courseDetails[k]&&snap.courseDetails[k].done)]; })
+  ) : {},
+  courseCount: (snap.courses||[]).length,
+};
     }),
     sectionDone: Object.fromEntries ? Object.fromEntries(
       Object.entries(snap.sectionContent || {}).map(function(e){ return [e[0], !!(e[1]&&e[1].done)]; })
@@ -3120,13 +3141,15 @@ async function loadProgramme(id) {
   sv('p-mode',m.mode); sv('p-date',m.date);
   courses = prog.courses || [];
   nextId  = Math.max.apply(null, courses.map(function(c){ return c.id||0; }).concat([0])) + 1;
-  SECTIONS.forEach(function(s){ sectionContent[s.key] = (prog.sectionContent && prog.sectionContent[s.key]) || {text:'',done:false}; });
-  if (prog.courseDetails) Object.assign(courseDetails, prog.courseDetails);
-  enforceSemesterTargets({verbose:false});
-  assignCodes();
-  renderUniversalRegistry();
-  toast('\u2705 "' + m.name + '" loaded!', 'success');
-  switchTab('curriculum');
+  // FIND this existing line:
+SECTIONS.forEach(function(s){ sectionContent[s.key] = (prog.sectionContent && prog.sectionContent[s.key]) || {text:'',done:false}; });
+// It is already correct — BUT make sure the line ABOVE it reads:
+if (prog.sectionContent) {
+  SECTIONS.forEach(function(s){ 
+    sectionContent[s.key] = prog.sectionContent[s.key] || {text:'',done:false}; 
+  });
+} else {
+  SECTIONS.forEach(function(s){ sectionContent[s.key] = {text:'',done:false}; });
 }
 function deleteProgramme(id) {
   var progs = getAllProgrammes();

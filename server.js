@@ -29,9 +29,16 @@ function initDB() {
       connectionString: dbUrl,
       ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false },
       max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      idleTimeoutMillis: 600000,
+      connectionTimeoutMillis: 10000,
     });
+
+    // Auto-recover if pool crashes
+pool.on('error', function(err) {
+  console.error('Pool error:', err.message);
+  pool = null; dbReady = false;
+  setTimeout(initDB, 5000);
+});
 
     return pool.query(`
       CREATE TABLE IF NOT EXISTS course_registry (
@@ -122,10 +129,17 @@ function initDB() {
       CREATE INDEX IF NOT EXISTS idx_notif_school ON notifications(for_school);
     `)
     .then(() => {
-      dbReady = true;
-      console.log('✅ PostgreSQL connected and tables ready');
-      return true;
-    })
+  dbReady = true;
+  console.log('✅ PostgreSQL connected and tables ready');
+
+  // Keep at least one connection alive every 4 minutes
+  setInterval(async function() {
+    try { await pool.query('SELECT 1'); }
+    catch(e) { console.warn('DB keepalive failed, reinitialising...'); initDB(); }
+  }, 4 * 60 * 1000);
+
+  return true;
+})
     .catch(e => {
       console.error('❌ DB init failed:', e.message);
       pool = null;

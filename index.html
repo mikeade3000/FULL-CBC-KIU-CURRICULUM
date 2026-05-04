@@ -799,6 +799,7 @@ body { user-select: none; -webkit-user-select: none; }
 <div class="pane" id="pane-programmes">
   <div class="toolbar">
     <button class="btn btn-teal" onclick="saveCurrentProgramme()">💾 Save Current Programme</button>
+    <button class="btn btn-sm btn-outline" onclick="syncProgrammesFromCloud()" title="Sync saved programmes from Render cloud">☁️ Sync from Cloud</button>
     <div class="toolbar-sep"></div>
     <button class="btn btn-gold" onclick="downloadWordDoc()">
       <span id="word-spin" style="display:none" class="spin"></span>
@@ -3035,9 +3036,16 @@ function saveProgrammes(progs) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(progs)); } catch(e) {}
 }
 async function saveCurrentProgramme() {
+  var p = getProg();
+  // Guard: must have programme name before saving
+  if (!p.name || p.name.trim().length < 3) {
+    toast('⚠ Please enter the Programme Name in the Setup tab before saving', 'error');
+    switchTab('setup');
+    setTimeout(function(){ var el=document.getElementById('p-name'); if(el){el.focus();el.style.border='2px solid red';setTimeout(function(){el.style.border='';},3000);} }, 300);
+    return;
+  }
   var auditOk = await auditBeforeSave();
   if (auditOk === false) return;
-  var p = getProg();
   assignCodes();
   var snap = {
     id: Date.now(), savedAt: new Date().toISOString(), meta: p,
@@ -3050,9 +3058,16 @@ async function saveCurrentProgramme() {
   if (idx >= 0) progs[idx] = snap; else progs.push(snap);
   saveProgrammes(progs);
   renderProgrammesList();
+
+  // Also save to Render backend for cross-browser/cross-computer access
+  fetch(REGISTRY_BACKEND + '/api/programmes', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(snap)
+  }).catch(function(){});
+
   saveProgrammeCourseUnits().then(function(n){
-    toast('\u2705 "' + p.name + '" saved! (' + n + ' units in registry)', 'success');
-  }).catch(function(){ toast('\u2705 "' + p.name + '" saved!', 'success'); });
+    toast('✅ "' + p.name + '" saved locally + synced to cloud! (' + n + ' units)', 'success');
+  }).catch(function(){ toast('✅ "' + p.name + '" saved!', 'success'); });
 }
 function loadProgramme(id) {
   var progs = getAllProgrammes();
@@ -3083,10 +3098,85 @@ function deleteProgramme(id) {
   renderProgrammesList();
   toast('Programme deleted','info');
 }
+
+async function syncProgrammesFromCloud() {
+  toast('Syncing programmes from cloud...', 'info');
+  try {
+    var resp = await fetch(REGISTRY_BACKEND + '/api/programmes');
+    if (!resp.ok) throw new Error('Server error ' + resp.status);
+    var backendProgs = await resp.json();
+    if (!backendProgs || !backendProgs.length) {
+      toast('No programmes found on cloud server', 'info'); return;
+    }
+    // Get full programme data for each
+    var fullProgs = [];
+    for (var i = 0; i < backendProgs.length; i++) {
+      try {
+        var fr = await fetch(REGISTRY_BACKEND + '/api/programmes/' + backendProgs[i].id);
+        if (fr.ok) { var fp = await fr.json(); fullProgs.push(fp); }
+        else fullProgs.push(backendProgs[i]);
+      } catch(e) { fullProgs.push(backendProgs[i]); }
+    }
+    // Merge with local
+    var local = getAllProgrammes();
+    var localIds = new Set(local.map(function(p){ return p.id; }));
+    var added = 0, updated = 0;
+    fullProgs.forEach(function(bp) {
+      if (!bp.id) return;
+      var li = local.findIndex(function(p){ return p.id === bp.id; });
+      if (li >= 0) {
+        // Update if cloud version is newer
+        if (bp.savedAt && local[li].savedAt && bp.savedAt > local[li].savedAt) {
+          local[li] = bp; updated++;
+        }
+      } else {
+        local.push(bp); added++;
+      }
+    });
+    saveProgrammes(local);
+    renderProgrammesList();
+    var msg = '\u2601 Cloud sync complete: ' + added + ' new, ' + updated + ' updated';
+    toast(msg, 'success');
+  } catch(e) {
+    toast('\u274c Cloud sync failed: ' + e.message + '. Check that Render is running.', 'error');
+    console.error('syncProgrammesFromCloud:', e);
+  }
+}
+
+
+
 function renderProgrammesList() {
   var el = document.getElementById('programmes-list');
   if (!el) return;
   var progs = getAllProgrammes();
+  // Show local programmes IMMEDIATELY
+  _renderProgrammesListHTML(progs);
+  // Then also check backend for programmes from other browsers/computers
+  fetch(REGISTRY_BACKEND + '/api/programmes')
+    .then(function(r){ return r.ok ? r.json() : []; })
+    .then(function(backendProgs) {
+      if (!backendProgs || !backendProgs.length) return;
+      var localIds = new Set(progs.map(function(p){ return p.id; }));
+      var added = 0;
+      backendProgs.forEach(function(bp) {
+        if (!localIds.has(bp.id)) {
+          // New programme from another computer — add to local
+          progs.push(bp);
+          added++;
+        }
+      });
+      if (added > 0) {
+        saveProgrammes(progs); // persist merged list locally
+        _renderProgrammesListHTML(progs);
+        toast('☁ ' + added + ' programme(s) synced from cloud', 'info');
+      }
+    })
+    .catch(function(){}); // silent fail if offline
+}
+
+function _renderProgrammesListHTML(progs) {
+  var el = document.getElementById('programmes-list');
+  if (!el) return;
   if (!progs.length) {
     el.innerHTML = '<p style="color:var(--gray-500);font-size:13px;font-style:italic;">No programmes saved yet.</p>';
     return;

@@ -304,6 +304,7 @@ body{font-family:var(--ff);background:var(--g50);color:var(--g700);font-size:14p
       <button class="btn bt" onclick="runAudit()">&#128269; Run Full Audit</button>
       <button class="btn bg sm" onclick="runAudit('cross')">&#9888; Cross-School Only</button>
       <button class="btn bn sm" onclick="exportAuditReport()">&#128229; Export Report (.txt)</button>
+      <button class="btn br sm" onclick="clearRegistryData()" style="margin-left:8px">&#128465; Clear All Registry Data</button>
       <span id="audit-stat" style="font-size:11px;color:var(--g500);margin-left:8px"></span>
     </div>
   </div></div>
@@ -813,6 +814,38 @@ function toggleMove(courseId,checked,year,sem){
   }
   if(_syncChoices[courseId])_syncChoices[courseId].moveTo=checked?{year:parseInt(year),sem:String(sem)}:null;
 }
+/* ── Clear all registry data ── */
+function clearRegistryData(){
+  var msg='This will clear:\n\n'
+    +'• All audit conflict data displayed here\n'
+    +'• The local registry cache (re-built from saved programmes)\n'
+    +'• The shared UCC course content library\n'
+    +'• The registry sync comparison state\n\n'
+    +'IMPLICATIONS FOR YOUR PROGRAMMES:\n'
+    +'Your two saved programmes (DIT and DCS) are NOT deleted — they stay safe in local storage and your connected folder.\n'
+    +'However, the Sync & Fix Registry feature will have NO baseline to compare against until you re-run it after re-loading your saved programmes.\n'
+    +'The shared UCC content (Computer Fundamentals, English, Communication, Research Methods) will need to be re-generated or re-pulled once.\n\n'
+    +'Server-side registry data requires a database reset by your system administrator.\n\n'
+    +'Are you sure you want to clear local registry data?';
+  if(!confirm(msg))return;
+  /* Clear runtime state */
+  _regCache=null;
+  _regData=[];
+  if(typeof _localReg!=='undefined')_localReg=[];
+  _syncChoices={};
+  _auditConflicts=[];
+  /* Clear shared UCC content from localStorage */
+  try{localStorage.removeItem('kiu_ucc_content_v1');}catch(e){}
+  /* Clear UI */
+  var ar=document.getElementById('audit-res');
+  if(ar)ar.innerHTML='<div style="text-align:center;padding:40px;color:var(--g300)">'
+    +'<div style="font-size:36px;margin-bottom:8px">&#128465;</div>'
+    +'<div style="font-size:14px">Registry data cleared. Click <strong>Run Full Audit</strong> to re-scan.</div></div>';
+  var rr=document.getElementById('reg-results');if(rr)rr.style.display='none';
+  var st=document.getElementById('audit-stat');if(st)st.textContent='';
+  toast('Registry data cleared. Shared UCC content cleared. Your programmes are safe.','s');
+}
+
 function selectAllSync(on){
   document.querySelectorAll('[data-cid]').forEach(function(chk){
     var id=parseInt(chk.dataset.cid);chk.checked=on;
@@ -1948,14 +1981,79 @@ function sp2(n){n=n||1;return Array(n).fill('<w:p><w:pPr><w:spacing w:after="80"
 function t2w(rawText){
   if(!rawText)return mkP('[Content not yet generated]',{italic:true,color:'888888'});
   var lines=rawText.split('\n'),parts=[],inB=false,inN=false,bId=null,nId2=null;
-  lines.forEach(function(line){var t=line.trim();
+  var inTbl=false,tblRows=[];
+
+  function flushTbl(){
+    if(!tblRows.length){inTbl=false;tblRows=[];return;}
+    // Remove pure separator rows like |---|---|
+    var dataRows=tblRows.filter(function(r){
+      var stripped=r.replace(/\|/g,'').replace(/[-:\s]/g,'');
+      return stripped.length>0;
+    });
+    if(dataRows.length<1){inTbl=false;tblRows=[];return;}
+    var parsed=dataRows.map(function(row){
+      return row.split('|').map(function(c){return c.trim();}).filter(function(c){return c!=='';});
+    }).filter(function(r){return r.length>0;});
+    if(!parsed.length)return;
+    var numCols=parsed.reduce(function(mx,r){return Math.max(mx,r.length);},0);
+    if(!numCols){inTbl=false;tblRows=[];return;}
+    var TW=14400;
+    // Distribute column widths — first col narrow if looks like Week/number
+    var cws=[];
+    var firstIsNum=parsed[0]&&/^(week|wk|no|#|\d)/i.test(parsed[0][0]||'');
+    for(var ci=0;ci<numCols;ci++){
+      if(ci===0&&firstIsNum)cws.push(Math.floor(TW*0.045));
+      else cws.push(Math.floor((TW-(firstIsNum?Math.floor(TW*0.045):0))/(numCols-(firstIsNum?1:0))));
+    }
+    // Ensure sum matches TW
+    var diff=TW-cws.reduce(function(a,b){return a+b;},0);
+    cws[cws.length-1]+=diff;
+    var rows='';
+    parsed.forEach(function(row,ri){
+      var isHdr=ri===0;
+      var cells='';
+      for(var ci=0;ci<numCols;ci++){
+        var cell=row[ci]||'';
+        cells+=mkC(sm(cell),{w:cws[ci],
+          fill:isHdr?'0F2D4A':'FFFFFF',
+          bc:isHdr?'0F2D4A':'AAAAAA',
+          bold:isHdr,color:isHdr?'FFFFFF':'000000',
+          sz:isHdr?16:18,align:isHdr?'center':'left'});
+      }
+      rows+=mkR(cells,isHdr);
+    });
+    parts.push(mkTbl(rows,TW,cws));
+    parts.push(sp2(1));
+    inTbl=false;tblRows=[];
+  }
+
+  lines.forEach(function(line){
+    var t=line.trim();
+    // Detect table row (starts with | or has multiple |)
+    if(t.charAt(0)==='|'){
+      inTbl=true;tblRows.push(t);return;
+    }
+    if(inTbl)flushTbl();
+    // SKIP all horizontal rule lines --- *** ___ entirely — no lines in Word doc
+    if(/^[-*_=]{2,}$/.test(t))return;
     if(!t){inB=false;inN=false;bId=null;nId2=null;parts.push(sp2(1));return;}
-    if(t.slice(0,3)==='## '||t.slice(0,2)==='# '){inB=false;inN=false;parts.push(H2(t.replace(/^#+\s/,'')));return;}
+    if(t.slice(0,4)==='### '||t.slice(0,3)==='## '||t.slice(0,2)==='# '){
+      inB=false;inN=false;
+      parts.push(H2(t.replace(/^#+\s/,'')));return;
+    }
     var j=0;while(j<t.length&&t[j]>='0'&&t[j]<='9')j++;
-    if(j>0&&j<t.length-1&&t[j]==='.'&&t[j+1]===' '){if(!inN){nId2=nId('1');inN=true;inB=false;}parts.push(mkP(sm(t.slice(j+2)),{numId:nId2,before:0,after:60}));return;}
-    if((t[0]==='-'||t[0]==='*')&&t[1]===' '){if(!inB){bId=nId('0');inB=true;inN=false;}parts.push(mkP(sm(t.slice(2)),{numId:bId,before:0,after:60}));return;}
-    inB=false;inN=false;parts.push(mkP(sm(t),{align:'both',before:0,after:80}));
+    if(j>0&&j<t.length-1&&t[j]==='.'&&t[j+1]===' '){
+      if(!inN){nId2=nId('1');inN=true;inB=false;}
+      parts.push(mkP(sm(t.slice(j+2)),{numId:nId2,before:0,after:60}));return;
+    }
+    if((t[0]==='-'||t[0]==='*')&&t.length>1&&t[1]===' '){
+      if(!inB){bId=nId('0');inB=true;inN=false;}
+      parts.push(mkP(sm(t.slice(2)),{numId:bId,before:0,after:60}));return;
+    }
+    inB=false;inN=false;
+    parts.push(mkP(sm(t),{align:'both',before:0,after:80}));
   });
+  if(inTbl)flushTbl();
   return parts.join('');
 }
 

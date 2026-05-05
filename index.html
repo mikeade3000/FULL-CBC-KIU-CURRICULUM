@@ -262,7 +262,6 @@ body{font-family:var(--ff);background:var(--g50);color:var(--g700);font-size:14p
 <div class="pane" id="pane-programmes">
   <div class="tb">
     <button class="btn bt" onclick="saveCurrentProgramme()">&#128190; Save Current Programme</button>
-    <button class="btn bo sm" onclick="syncFromCloud()">&#9729; Sync Cloud</button>
     <div class="sep"></div>
     <button class="btn bg" onclick="downloadWordDoc()"><span id="ws1" style="display:none" class="spin"></span> &#128196; Word (.docx)</button>
     <button class="btn bn sm" onclick="downloadAllCourseUnits()"><span id="us1" style="display:none" class="spin"></span> &#128218; Course Units</button>
@@ -271,7 +270,7 @@ body{font-family:var(--ff);background:var(--g50);color:var(--g700);font-size:14p
     <button class="btn bo sm" onclick="document.getElementById('imp-file').click()">&#8679; Import JSON</button>
     <input type="file" id="imp-file" style="display:none" accept=".json" onchange="importProgrammes(this)">
   </div>
-  <div class="al ai">&#128161; All programmes saved locally in your browser. Use <strong>Export JSON</strong> to back up. <strong>Sync Cloud</strong> restores from the server.</div>
+  <div class="al ai">&#128161; All programmes are saved locally in your browser. Use <strong>Export JSON</strong> to back up or transfer programmes between devices. Use <strong>&#8679; Import JSON</strong> to restore.</div>
   <div class="card"><div class="card-hd">&#128193; Saved Programmes</div><div class="card-body"><div id="prog-list"></div></div></div>
   <div class="card"><div class="card-hd gd">&#128229; Download Options</div><div class="card-body">
     <div class="r3">
@@ -1650,63 +1649,166 @@ function exportAuditReport(){
 </script>
 
 <script>
-/* PROGRAMME STORAGE */
+/* PROGRAMME STORAGE — local-first, full save/load including SC + CD */
 var SK='kiu_cbe_v2';
 function getProgs(){try{return JSON.parse(localStorage.getItem(SK)||'[]');}catch(e){return[];}}
-function saveProgs(ps){try{localStorage.setItem(SK,JSON.stringify(ps));}catch(e){}}
+function saveProgs(ps){
+  try{localStorage.setItem(SK,JSON.stringify(ps));}
+  catch(e){
+    // localStorage full — try compressing older entries (drop Word-doc cache only)
+    toast('Storage warning: consider exporting JSON backup','e');
+  }
+}
 
-async function saveCurrentProgramme(){
+/* ── SAVE ── */
+function saveCurrentProgramme(){
   var p=getProg();
   if(!p.name||p.name.trim().length<3){toast('Enter Programme Name in Setup tab first','e');switchTab('setup');return;}
   assignCodes();
-  var snap={id:Date.now(),savedAt:new Date().toISOString(),meta:p,courses:JSON.parse(JSON.stringify(courses)),SC:JSON.parse(JSON.stringify(SC)),CD:JSON.parse(JSON.stringify(CD))};
-  var ps=getProgs(),idx=ps.findIndex(function(x){return x.meta&&x.meta.name===p.name;});
-  if(idx>=0)ps[idx]=snap;else ps.push(snap);
-  saveProgs(ps);renderProgList();
-  /* Cloud sync */
-  var light={id:snap.id,savedAt:snap.savedAt,meta:snap.meta,courses:(snap.courses||[]).map(function(c){return{id:c.id,year:c.year,sem:c.sem,prefix:c.prefix,name:c.name,code:c.code,type:c.type,DH:c.DH,SH:c.SH,AH:c.AH,OH:c.OH,elective:!!c.elective,tier:c.tier||4};}),sectionContent:snap.SC,courseCount:(snap.courses||[]).length};
-  fetch(API+'/api/programmes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(light)}).catch(function(){});
-  toast('\u2705 "'+p.name+'" saved!','s');
+  var snap={
+    id:Date.now(),
+    savedAt:new Date().toISOString(),
+    version:2,
+    meta:p,
+    courses:JSON.parse(JSON.stringify(courses)),
+    SC:JSON.parse(JSON.stringify(SC)),
+    CD:JSON.parse(JSON.stringify(CD))
+  };
+  var ps=getProgs();
+  var idx=ps.findIndex(function(x){return x.meta&&x.meta.name===p.name;});
+  if(idx>=0){
+    if(!confirm('"'+p.name+'" already saved. Overwrite with current version?'))return;
+    ps[idx]=snap;
+  }else{
+    ps.push(snap);
+  }
+  saveProgs(ps);
+  renderProgList();
+  var secDone=SECTIONS.filter(function(s){return SC[s.key]&&SC[s.key].done;}).length;
+  var cdDone=courses.filter(function(c){return CD[c.code]&&CD[c.code].done;}).length;
+  toast('\u2705 "'+p.name+'" saved! ('+courses.length+' courses, '+secDone+'/'+SECTIONS.length+' sections, '+cdDone+' course units)','s');
 }
 
-async function loadProgramme(id){
-  var ps=getProgs(),prog=ps.find(function(p){return p.id===id;});
-  if(!prog){toast('Not found locally, trying cloud...','i');try{var r=await fetch(API+'/api/programmes/'+id);if(r.ok)prog=await r.json();}catch(e){}if(!prog){toast('Programme not found','e');return;}}
-  if(!prog.meta&&(prog.name||prog.abbr))prog.meta={name:prog.name||'',abbr:prog.abbr||'',school:prog.school||'',dept:prog.dept||'',level:prog.level||7,years:prog.years||3,mode:prog.mode||'Full-time',prefix:prog.prefix||''};
+/* ── LOAD ── */
+function loadProgramme(id){
+  var ps=getProgs(),prog=ps.find(function(x){return x.id===id;});
+  if(!prog){toast('Programme not found in local storage','e');return;}
   var m=prog.meta||prog;
-  sv('p-name',m.name);sv('p-award',m.award);sv('p-abbr',m.abbr);sv('p-prefix',m.prefix);sv('p-school',m.school);sv('p-dept',m.dept);sv('p-hod',m.hod);
+  /* Restore Setup fields */
+  sv('p-name',m.name);sv('p-award',m.award);sv('p-abbr',m.abbr);sv('p-prefix',m.prefix);
+  sv('p-school',m.school);sv('p-dept',m.dept);sv('p-hod',m.hod);
   if(m.level){var le=document.getElementById('p-level');if(le)le.value=String(m.level);}
   if(m.years){var ye=document.getElementById('p-years');if(ye)ye.value=String(m.years);}
-  sv('p-mode',m.mode);sv('p-date',m.date);if(m.admission)sv('p-admission',m.admission);
-  courses=prog.courses||[];
+  sv('p-mode',m.mode);sv('p-date',m.date);
+  if(m.admission)sv('p-admission',m.admission);
+  /* Restore courses */
+  courses=JSON.parse(JSON.stringify(prog.courses||[]));
   nextId=Math.max.apply(null,courses.map(function(c){return c.id||0;}).concat([0]))+1;
-  /* Restore section content (supports both SC and sectionContent field names) */
+  /* Restore section content — support old field names for backwards compat */
   var savedSC=prog.SC||prog.sectionContent||{};
   SECTIONS.forEach(function(s){SC[s.key]=savedSC[s.key]||{text:'',done:false};});
-  CD=prog.CD||prog.courseDetails||{};
-  assignCodes();renderCurriculum();renderGenTab();renderProgList();
-  toast('\u2705 "'+((m&&m.name)||'Programme')+'" loaded!','s');
+  /* Restore course details — support old field names */
+  CD=JSON.parse(JSON.stringify(prog.CD||prog.courseDetails||{}));
+  /* Rebuild UI */
+  assignCodes();renderUCCList();renderCurriculum();renderGenTab();renderProgList();
+  var secDone=SECTIONS.filter(function(s){return SC[s.key]&&SC[s.key].done;}).length;
+  var cdDone=courses.filter(function(c){return CD[c.code]&&CD[c.code].done;}).length;
+  toast('\u2705 "'+((m&&m.name)||'Programme')+'" loaded — '
+    +courses.length+' courses, '+secDone+'/'+SECTIONS.length+' sections, '+cdDone+' course units restored','s');
   switchTab('curriculum');
 }
 
-function deleteProg(id){var ps=getProgs(),p=ps.find(function(x){return x.id===id;});if(!p)return;if(!confirm('Delete "'+(p.meta&&p.meta.name||'this programme')+'"?'))return;saveProgs(ps.filter(function(x){return x.id!==id;}));renderProgList();toast('Programme deleted','i');}
-
-async function syncFromCloud(){
-  toast('Syncing from cloud...','i');
-  try{var r=await fetch(API+'/api/programmes');if(!r.ok)throw new Error('Server '+r.status);var bp=await r.json();if(!bp||!bp.length){toast('No programmes on cloud','i');return;}var local=getProgs(),added=0,updated=0;bp.forEach(function(b){if(!b.id)return;if(!b.meta&&(b.name||b.abbr))b.meta={name:b.name||'',abbr:b.abbr||''};var li=local.findIndex(function(p){return p.id===b.id;});if(li>=0){if(b.savedAt&&local[li].savedAt&&b.savedAt>local[li].savedAt){local[li]=b;updated++;}}else{local.push(b);added++;}});saveProgs(local);renderProgList();toast('Sync done: '+added+' new, '+updated+' updated','s');}
-  catch(e){toast('Sync failed: '+e.message,'e');}
+function deleteProg(id){
+  var ps=getProgs(),p=ps.find(function(x){return x.id===id;});if(!p)return;
+  if(!confirm('Delete "'+(p.meta&&p.meta.name||'this programme')+'"? This cannot be undone.'))return;
+  saveProgs(ps.filter(function(x){return x.id!==id;}));
+  renderProgList();toast('Programme deleted','i');
 }
 
 function renderProgList(){
   var el=document.getElementById('prog-list');if(!el)return;
   var ps=getProgs().filter(function(p){return p.id;});
-  if(!ps.length){el.innerHTML='<p style="color:var(--g500);font-style:italic">No programmes saved yet. Click "Save Current Programme" above.</p>';fetch(API+'/api/programmes').then(function(r){return r.ok?r.json():[];}).then(function(bp){if(!bp||!bp.length)return;var local=getProgs(),add=0;bp.forEach(function(b){if(!b.id)return;if(!b.meta&&(b.name||b.abbr))b.meta={name:b.name||'',abbr:b.abbr||''};if(!local.some(function(p){return p.id===b.id;})){local.push(b);add++;}});if(add>0){saveProgs(local);renderProgList();}}).catch(function(){});return;}
-  el.innerHTML=ps.map(function(p){var dt=new Date(p.savedAt).toLocaleDateString('en-UG',{day:'2-digit',month:'short',year:'numeric'}),m=p.meta||p,nm=(m.name||p.name||'Unnamed').trim(),ab=m.abbr||p.abbr||'',cs=p.courses||[],sdone=SECTIONS.filter(function(s){var sv2=p.SC||p.sectionContent||{};return sv2[s.key]&&sv2[s.key].done;}).length;return'<div style="border:1.5px solid var(--g200);border-radius:6px;padding:12px 14px;margin-bottom:8px;background:#fff;display:flex;align-items:center;gap:12px"><div style="flex:1"><div style="font-weight:700;color:var(--nv);font-size:13px">'+esc(nm)+'</div><div style="font-size:11px;color:var(--g500);margin-top:2px">'+esc(ab)+' &middot; '+cs.length+' courses &middot; '+sdone+'/'+SECTIONS.length+' sections &middot; Saved '+dt+'</div></div><div style="display:flex;gap:6px"><button class="btn bt xs" onclick="loadProgramme('+p.id+')">Load</button><button class="btn bg xs" onclick="dlDocFor('+p.id+')">\ud83d\udcc4 Word</button><button class="btn br xs" onclick="deleteProg('+p.id+')">\u2715</button></div></div>';}).join('');
+  if(!ps.length){
+    el.innerHTML='<div class="al ai">No programmes saved yet. Use <strong>Save Current Programme</strong> above to save your first programme.</div>';
+    return;
+  }
+  // Sort newest first
+  ps=ps.slice().sort(function(a,b){return new Date(b.savedAt)-new Date(a.savedAt);});
+  el.innerHTML=ps.map(function(p){
+    var dt=p.savedAt?new Date(p.savedAt).toLocaleString('en-UG',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
+    var m=p.meta||p,nm=(m.name||p.name||'Unnamed').trim(),ab=m.abbr||p.abbr||'';
+    var cs=p.courses||[],savedSC=p.SC||p.sectionContent||{},savedCD=p.CD||p.courseDetails||{};
+    var secDone=SECTIONS.filter(function(s){return savedSC[s.key]&&savedSC[s.key].done;}).length;
+    var cdDone=cs.filter(function(c){return savedCD[c.code]&&savedCD[c.code].done;}).length;
+    var pctSec=Math.round(secDone/SECTIONS.length*100),pctCd=cs.length?Math.round(cdDone/cs.length*100):0;
+    return '<div style="border:1.5px solid var(--g200);border-radius:6px;padding:12px 14px;margin-bottom:8px;background:#fff">'
+      +'<div style="display:flex;align-items:flex-start;gap:12px">'
+      +'<div style="flex:1">'
+      +'<div style="font-weight:700;color:var(--nv);font-size:13px">'+esc(nm)+'</div>'
+      +'<div style="font-size:11px;color:var(--g500);margin-top:2px">'+esc(ab)
+        +' &middot; '+cs.length+' courses'
+        +' &middot; Saved: '+dt+'</div>'
+      +'<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap">'
+      +'<div style="font-size:11px"><span style="color:var(--nv);font-weight:700">Sections:</span> '
+        +'<span style="color:'+(pctSec===100?'var(--gn)':pctSec>0?'var(--gd)':'var(--g500)')+'">'+secDone+'/'+SECTIONS.length+' ('+pctSec+'%)</span></div>'
+      +'<div style="font-size:11px"><span style="color:var(--nv);font-weight:700">Course Units:</span> '
+        +'<span style="color:'+(pctCd===100?'var(--gn)':pctCd>0?'var(--gd)':'var(--g500)')+'">'+cdDone+'/'+cs.length+' ('+pctCd+'%)</span></div>'
+      +'</div></div>'
+      +'<div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0">'
+      +'<button class="btn bt sm" onclick="loadProgramme('+p.id+')">\u21a9 Load</button>'
+      +'<button class="btn bg sm" onclick="dlDocFor('+p.id+')">\ud83d\udcc4 Word</button>'
+      +'<button class="btn bo sm" onclick="exportSingle('+p.id+')">\u21e9 JSON</button>'
+      +'<button class="btn br sm" onclick="deleteProg('+p.id+')">\u2715 Delete</button>'
+      +'</div></div></div>';
+  }).join('');
 }
 
-function exportAllProgrammes(){var ps=getProgs();if(!ps.length){toast('No programmes','e');return;}var blob=new Blob([JSON.stringify(ps,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='KIU_Programmes_'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},5000);toast('Exported','s');}
-function importProgrammes(inp){var file=inp.files[0];if(!file)return;var r=new FileReader();r.onload=function(e){try{var ps=JSON.parse(e.target.result);if(!Array.isArray(ps))throw new Error('Invalid JSON format');var ex=getProgs();ps.forEach(function(p){var i=ex.findIndex(function(x){return x.id===p.id;});if(i>=0)ex[i]=p;else ex.push(p);});saveProgs(ex);renderProgList();toast(ps.length+' programme(s) imported!','s');}catch(e){toast(e.message,'e');}};r.readAsText(file);inp.value='';}
+function exportAllProgrammes(){
+  var ps=getProgs();
+  if(!ps.length){toast('No programmes to export','e');return;}
+  var blob=new Blob([JSON.stringify(ps,null,2)],{type:'application/json'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='KIU_All_Programmes_'+new Date().toISOString().slice(0,10)+'.json';
+  a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},5000);
+  toast('Exported '+ps.length+' programme(s) to JSON','s');
+}
 
+function exportSingle(id){
+  var ps=getProgs(),p=ps.find(function(x){return x.id===id;});if(!p)return;
+  var blob=new Blob([JSON.stringify([p],null,2)],{type:'application/json'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  var nm=(p.meta&&p.meta.abbr||p.meta&&p.meta.name||'Programme').replace(/[^a-zA-Z0-9]/g,'_');
+  a.download='KIU_'+nm+'_'+new Date().toISOString().slice(0,10)+'.json';
+  a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},5000);
+  toast('Exported "'+((p.meta&&p.meta.name)||'Programme')+'" to JSON','s');
+}
+
+function importProgrammes(inp){
+  var file=inp.files[0];if(!file)return;
+  var r=new FileReader();
+  r.onload=function(e){
+    try{
+      var ps=JSON.parse(e.target.result);
+      if(!Array.isArray(ps))ps=[ps]; // handle single-programme export
+      if(!ps.length)throw new Error('No programmes found in file');
+      var ex=getProgs(),added=0,updated=0;
+      ps.forEach(function(p){
+        if(!p.id)p.id=Date.now()+Math.random();
+        var i=ex.findIndex(function(x){return x.id===p.id;});
+        if(i>=0){ex[i]=p;updated++;}else{ex.push(p);added++;}
+      });
+      saveProgs(ex);renderProgList();
+      toast(added+' added, '+updated+' updated from import','s');
+    }catch(e){toast('Import failed: '+e.message,'e');}
+  };
+  r.readAsText(file);inp.value='';
+}
+</script>
+
+
+<script>
 /* WORD DOC GENERATION (simplified but functional) */
 var TF='<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>';
 var _nR=[],_nC=10;

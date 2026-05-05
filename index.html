@@ -262,6 +262,7 @@ body{font-family:var(--ff);background:var(--g50);color:var(--g700);font-size:14p
 <div class="pane" id="pane-programmes">
   <div class="tb">
     <button class="btn bt" onclick="saveCurrentProgramme()">&#128190; Save Current Programme</button>
+    <button class="btn bo sm" onclick="fsScanFiles(true)" id="fs-scan-btn" style="display:none">&#8635; Scan Folder</button>
     <div class="sep"></div>
     <button class="btn bg" onclick="downloadWordDoc()"><span id="ws1" style="display:none" class="spin"></span> &#128196; Word (.docx)</button>
     <button class="btn bn sm" onclick="downloadAllCourseUnits()"><span id="us1" style="display:none" class="spin"></span> &#128218; Course Units</button>
@@ -270,7 +271,21 @@ body{font-family:var(--ff);background:var(--g50);color:var(--g700);font-size:14p
     <button class="btn bo sm" onclick="document.getElementById('imp-file').click()">&#8679; Import JSON</button>
     <input type="file" id="imp-file" style="display:none" accept=".json" onchange="importProgrammes(this)">
   </div>
-  <div class="al ai">&#128161; All programmes are saved locally in your browser. Use <strong>Export JSON</strong> to back up or transfer programmes between devices. Use <strong>&#8679; Import JSON</strong> to restore.</div>
+  <div class="al ai">&#128161; Programmes are saved locally. Use <strong>Export JSON</strong> to back up.</div>
+  <!-- FOLDER STATUS BAR -->
+  <div id="fs-bar" style="border:2px solid var(--g200);border-radius:8px;padding:12px 16px;margin-bottom:14px;background:#fff;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <div id="fs-icon" style="font-size:24px">&#128193;</div>
+    <div style="flex:1;min-width:180px">
+      <div id="fs-label" style="font-weight:700;font-size:13px;color:var(--nv)">Local Folder: Not Connected</div>
+      <div id="fs-sub" style="font-size:11px;color:var(--g500);margin-top:2px">Connect a folder so programmes are saved as JSON files on your computer and auto-loaded on every visit.</div>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap" id="fs-btns">
+      <button class="btn bt sm" onclick="fsConnect()" id="fs-connect-btn">&#128193; Connect Folder</button>
+    </div>
+    <div id="fs-indicator" style="display:none;width:10px;height:10px;border-radius:50%;flex-shrink:0"></div>
+  </div>
+  <!-- FOLDER FILE LIST -->
+  <div id="fs-files" style="display:none;margin-bottom:14px"></div>
   <div class="card"><div class="card-hd">&#128193; Saved Programmes</div><div class="card-body"><div id="prog-list"></div></div></div>
   <div class="card"><div class="card-hd gd">&#128229; Download Options</div><div class="card-body">
     <div class="r3">
@@ -1649,113 +1664,197 @@ function exportAuditReport(){
 </script>
 
 <script>
-/* PROGRAMME STORAGE — local-first, full save/load including SC + CD */
+/* ═══════════════════════════════════════════════════════════════
+   PROGRAMME STORAGE  —  Split-key design to beat 5 MB limit
+   ───────────────────────────────────────────────────────────────
+   kiu_cbe_v2          → array of prog headers (meta + courses only, NO SC/CD)
+   kiu_sc_{id}         → section content  (SC) for that programme
+   kiu_cd_{id}         → course details   (CD) for that programme
+   kiu_ucc_content_v1  → shared UCC course content (already in block 5)
+   ═══════════════════════════════════════════════════════════════ */
 var SK='kiu_cbe_v2';
-function getProgs(){try{return JSON.parse(localStorage.getItem(SK)||'[]');}catch(e){return[];}}
+
+function getProgs(){
+  try{return JSON.parse(localStorage.getItem(SK)||'[]');}catch(e){return[];}
+}
 function saveProgs(ps){
   try{localStorage.setItem(SK,JSON.stringify(ps));}
-  catch(e){
-    // localStorage full — try compressing older entries (drop Word-doc cache only)
-    toast('Storage warning: consider exporting JSON backup','e');
-  }
+  catch(e){console.error('saveProgs failed',e);}
 }
 
-/* ── SAVE ── */
+/* — sub-store helpers — */
+function lsSet(key,data){
+  try{localStorage.setItem(key,JSON.stringify(data));return true;}
+  catch(e){
+    /* quota exceeded — try to free space by removing old content for same prog */
+    try{localStorage.removeItem(key);}catch(e2){}
+    try{localStorage.setItem(key,JSON.stringify(data));return true;}
+    catch(e3){return false;}
+  }
+}
+function lsGet(key){
+  try{var v=localStorage.getItem(key);return v?JSON.parse(v):null;}catch(e){return null;}
+}
+function lsDel(key){try{localStorage.removeItem(key);}catch(e){}}
+
+/* — count helpers used in renderProgList — */
+function countSecDone(id){
+  var savedSC=lsGet('kiu_sc_'+id)||{};
+  return SECTIONS.filter(function(s){return savedSC[s.key]&&savedSC[s.key].done;}).length;
+}
+function countCdDone(id,cs){
+  var savedCD=lsGet('kiu_cd_'+id)||{};
+  return (cs||[]).filter(function(c){return savedCD[c.code]&&savedCD[c.code].done;}).length;
+}
+
+/* ═══ SAVE ═══════════════════════════════════════════════════ */
 function saveCurrentProgramme(){
   var p=getProg();
-  if(!p.name||p.name.trim().length<3){toast('Enter Programme Name in Setup tab first','e');switchTab('setup');return;}
+  if(!p.name||p.name.trim().length<3){
+    toast('Enter a Programme Name in Setup tab first','e');
+    switchTab('setup');return;
+  }
   assignCodes();
-  var snap={
-    id:Date.now(),
-    savedAt:new Date().toISOString(),
-    version:2,
-    meta:p,
-    courses:JSON.parse(JSON.stringify(courses)),
-    SC:JSON.parse(JSON.stringify(SC)),
-    CD:JSON.parse(JSON.stringify(CD))
-  };
+
+  /* Count what we actually have before saving */
+  var secDone=SECTIONS.filter(function(s){return SC[s.key]&&SC[s.key].done;}).length;
+  var cdDone=courses.filter(function(c){return CD[c.code]&&CD[c.code].done;}).length;
+
+  /* Build header (small — no SC/CD blobs) */
+  var now=new Date();
+  var id;
   var ps=getProgs();
   var idx=ps.findIndex(function(x){return x.meta&&x.meta.name===p.name;});
   if(idx>=0){
-    if(!confirm('"'+p.name+'" already saved. Overwrite with current version?'))return;
-    ps[idx]=snap;
+    if(!confirm('"'+p.name+'" already saved. Overwrite?'))return;
+    id=ps[idx].id;   // reuse same id so sub-keys stay consistent
+    ps[idx]={id:id,savedAt:now.toISOString(),version:3,meta:p,
+              courses:JSON.parse(JSON.stringify(courses)),
+              secCount:secDone,cdCount:cdDone};
   }else{
-    ps.push(snap);
+    id=now.getTime();
+    ps.push({id:id,savedAt:now.toISOString(),version:3,meta:p,
+              courses:JSON.parse(JSON.stringify(courses)),
+              secCount:secDone,cdCount:cdDone});
   }
+
+  /* Save header list */
   saveProgs(ps);
+
+  /* Save SC in separate key */
+  var scOk=lsSet('kiu_sc_'+id,JSON.parse(JSON.stringify(SC)));
+
+  /* Save CD in separate key */
+  var cdOk=lsSet('kiu_cd_'+id,JSON.parse(JSON.stringify(CD)));
+
   renderProgList();
-  var secDone=SECTIONS.filter(function(s){return SC[s.key]&&SC[s.key].done;}).length;
-  var cdDone=courses.filter(function(c){return CD[c.code]&&CD[c.code].done;}).length;
-  toast('\u2705 "'+p.name+'" saved! ('+courses.length+' courses, '+secDone+'/'+SECTIONS.length+' sections, '+cdDone+' course units)','s');
+
+  if(!scOk||!cdOk){
+    toast('\u26a0 Saved (partial — storage full). Export JSON now to back up!','e');
+  }else{
+    toast('\u2705 "'+p.name+'" saved \u2014 '
+      +courses.length+' courses, '
+      +secDone+'/'+SECTIONS.length+' sections, '
+      +cdDone+' course units','s');
+  }
+  /* Also save to local folder if connected (non-blocking) */
+  if(typeof fsSaveFile==='function'&&typeof _fsHandle!=='undefined'&&_fsHandle){
+    var fullSnap=Object.assign({},snap,{SC:JSON.parse(JSON.stringify(SC)),CD:JSON.parse(JSON.stringify(CD))});
+    fsSaveFile(fullSnap).then(function(nm){
+      if(nm){var sub=document.getElementById('fs-sub');
+        if(sub)sub.textContent='Last saved: "'+nm+'" — '+new Date().toLocaleTimeString('en-UG');}
+    }).catch(function(){});
+  }
 }
 
-/* ── LOAD ── */
+/* ═══ LOAD ═══════════════════════════════════════════════════ */
 function loadProgramme(id){
   var ps=getProgs(),prog=ps.find(function(x){return x.id===id;});
-  if(!prog){toast('Programme not found in local storage','e');return;}
+  if(!prog){toast('Programme not found — try Import JSON','e');return;}
+
   var m=prog.meta||prog;
+
   /* Restore Setup fields */
-  sv('p-name',m.name);sv('p-award',m.award);sv('p-abbr',m.abbr);sv('p-prefix',m.prefix);
-  sv('p-school',m.school);sv('p-dept',m.dept);sv('p-hod',m.hod);
-  if(m.level){var le=document.getElementById('p-level');if(le)le.value=String(m.level);}
-  if(m.years){var ye=document.getElementById('p-years');if(ye)ye.value=String(m.years);}
-  sv('p-mode',m.mode);sv('p-date',m.date);
+  sv('p-name',m.name);sv('p-award',m.award||'');sv('p-abbr',m.abbr||'');
+  sv('p-prefix',m.prefix||'');sv('p-school',m.school||'');
+  sv('p-dept',m.dept||'');sv('p-hod',m.hod||'');
+  var le=document.getElementById('p-level');if(le&&m.level)le.value=String(m.level);
+  var ye=document.getElementById('p-years');if(ye&&m.years)ye.value=String(m.years);
+  sv('p-mode',m.mode||'Full-time');sv('p-date',m.date||'');
   if(m.admission)sv('p-admission',m.admission);
+
   /* Restore courses */
   courses=JSON.parse(JSON.stringify(prog.courses||[]));
   nextId=Math.max.apply(null,courses.map(function(c){return c.id||0;}).concat([0]))+1;
-  /* Restore section content — support old field names for backwards compat */
-  var savedSC=prog.SC||prog.sectionContent||{};
+
+  /* Restore SC from split key — fallback to inline for old v2 saves */
+  var savedSC=lsGet('kiu_sc_'+id)||prog.SC||prog.sectionContent||{};
   SECTIONS.forEach(function(s){SC[s.key]=savedSC[s.key]||{text:'',done:false};});
-  /* Restore course details — support old field names */
-  CD=JSON.parse(JSON.stringify(prog.CD||prog.courseDetails||{}));
-  /* Rebuild UI */
+
+  /* Restore CD from split key — fallback to inline for old v2 saves */
+  CD=JSON.parse(JSON.stringify(lsGet('kiu_cd_'+id)||prog.CD||prog.courseDetails||{}));
+
   assignCodes();renderUCCList();renderCurriculum();renderGenTab();renderProgList();
+
   var secDone=SECTIONS.filter(function(s){return SC[s.key]&&SC[s.key].done;}).length;
   var cdDone=courses.filter(function(c){return CD[c.code]&&CD[c.code].done;}).length;
-  toast('\u2705 "'+((m&&m.name)||'Programme')+'" loaded — '
-    +courses.length+' courses, '+secDone+'/'+SECTIONS.length+' sections, '+cdDone+' course units restored','s');
+  toast('\u2705 "'+((m&&m.name)||'Programme')+'" loaded \u2014 '
+    +courses.length+' courses, '+secDone+'/'+SECTIONS.length+' sections, '
+    +cdDone+' course unit(s) restored','s');
   switchTab('curriculum');
 }
 
+/* ═══ DELETE ═════════════════════════════════════════════════ */
 function deleteProg(id){
   var ps=getProgs(),p=ps.find(function(x){return x.id===id;});if(!p)return;
-  if(!confirm('Delete "'+(p.meta&&p.meta.name||'this programme')+'"? This cannot be undone.'))return;
+  if(!confirm('Delete "'+(p.meta&&p.meta.name||'this programme')+'"?\nThis also removes all saved sections and course units.'))return;
   saveProgs(ps.filter(function(x){return x.id!==id;}));
+  lsDel('kiu_sc_'+id);
+  lsDel('kiu_cd_'+id);
   renderProgList();toast('Programme deleted','i');
 }
 
+/* ═══ RENDER LIST ════════════════════════════════════════════ */
 function renderProgList(){
   var el=document.getElementById('prog-list');if(!el)return;
   var ps=getProgs().filter(function(p){return p.id;});
   if(!ps.length){
-    el.innerHTML='<div class="al ai">No programmes saved yet. Use <strong>Save Current Programme</strong> above to save your first programme.</div>';
+    el.innerHTML='<div class="al ai">No programmes saved yet. '
+      +'Use <strong>Save Current Programme</strong> above.</div>';
     return;
   }
-  // Sort newest first
   ps=ps.slice().sort(function(a,b){return new Date(b.savedAt)-new Date(a.savedAt);});
   el.innerHTML=ps.map(function(p){
-    var dt=p.savedAt?new Date(p.savedAt).toLocaleString('en-UG',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
     var m=p.meta||p,nm=(m.name||p.name||'Unnamed').trim(),ab=m.abbr||p.abbr||'';
-    var cs=p.courses||[],savedSC=p.SC||p.sectionContent||{},savedCD=p.CD||p.courseDetails||{};
-    var secDone=SECTIONS.filter(function(s){return savedSC[s.key]&&savedSC[s.key].done;}).length;
-    var cdDone=cs.filter(function(c){return savedCD[c.code]&&savedCD[c.code].done;}).length;
-    var pctSec=Math.round(secDone/SECTIONS.length*100),pctCd=cs.length?Math.round(cdDone/cs.length*100):0;
+    var cs=p.courses||[];
+    /* Read counts from split keys (fast — just checking keys) */
+    var secDone=countSecDone(p.id);
+    var cdDone=countCdDone(p.id,cs);
+    /* Fallback to cached header counts for speed if sub-keys missing */
+    if(secDone===0&&p.secCount>0)secDone=p.secCount;
+    if(cdDone===0&&p.cdCount>0)cdDone=p.cdCount;
+    var pctSec=Math.round(secDone/SECTIONS.length*100);
+    var pctCd=cs.length?Math.round(cdDone/cs.length*100):0;
+    var dt=p.savedAt?new Date(p.savedAt).toLocaleString('en-UG',
+      {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
+    var colSec=pctSec===100?'var(--gn)':pctSec>0?'var(--gd)':'var(--g500)';
+    var colCd=pctCd===100?'var(--gn)':pctCd>0?'var(--gd)':'var(--g500)';
     return '<div style="border:1.5px solid var(--g200);border-radius:6px;padding:12px 14px;margin-bottom:8px;background:#fff">'
       +'<div style="display:flex;align-items:flex-start;gap:12px">'
       +'<div style="flex:1">'
       +'<div style="font-weight:700;color:var(--nv);font-size:13px">'+esc(nm)+'</div>'
       +'<div style="font-size:11px;color:var(--g500);margin-top:2px">'+esc(ab)
+        +' &middot; Level '+(m.level||7)
         +' &middot; '+cs.length+' courses'
         +' &middot; Saved: '+dt+'</div>'
-      +'<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap">'
-      +'<div style="font-size:11px"><span style="color:var(--nv);font-weight:700">Sections:</span> '
-        +'<span style="color:'+(pctSec===100?'var(--gn)':pctSec>0?'var(--gd)':'var(--g500)')+'">'+secDone+'/'+SECTIONS.length+' ('+pctSec+'%)</span></div>'
-      +'<div style="font-size:11px"><span style="color:var(--nv);font-weight:700">Course Units:</span> '
-        +'<span style="color:'+(pctCd===100?'var(--gn)':pctCd>0?'var(--gd)':'var(--g500)')+'">'+cdDone+'/'+cs.length+' ('+pctCd+'%)</span></div>'
+      +'<div style="display:flex;gap:16px;margin-top:6px">'
+      +'<span style="font-size:12px"><strong style="color:var(--nv)">Sections:</strong> '
+        +'<span style="color:'+colSec+';font-weight:700">'+secDone+'/'+SECTIONS.length+' ('+pctSec+'%)</span></span>'
+      +'<span style="font-size:12px"><strong style="color:var(--nv)">Course Units:</strong> '
+        +'<span style="color:'+colCd+';font-weight:700">'+cdDone+'/'+cs.length+' ('+pctCd+'%)</span></span>'
       +'</div></div>'
       +'<div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0">'
-      +'<button class="btn bt sm" onclick="loadProgramme('+p.id+')">\u21a9 Load</button>'
+      +'<button class="btn bt sm" onclick="loadProgramme('+p.id+')" style="white-space:nowrap">\u21a9 Load</button>'
       +'<button class="btn bg sm" onclick="dlDocFor('+p.id+')">\ud83d\udcc4 Word</button>'
       +'<button class="btn bo sm" onclick="exportSingle('+p.id+')">\u21e9 JSON</button>'
       +'<button class="btn br sm" onclick="deleteProg('+p.id+')">\u2715 Delete</button>'
@@ -1763,26 +1862,40 @@ function renderProgList(){
   }).join('');
 }
 
+/* ═══ EXPORT / IMPORT ════════════════════════════════════════ */
 function exportAllProgrammes(){
   var ps=getProgs();
   if(!ps.length){toast('No programmes to export','e');return;}
-  var blob=new Blob([JSON.stringify(ps,null,2)],{type:'application/json'});
+  /* Include SC and CD in export */
+  var full=ps.map(function(p){
+    return Object.assign({},p,{
+      SC:lsGet('kiu_sc_'+p.id)||p.SC||{},
+      CD:lsGet('kiu_cd_'+p.id)||p.CD||{}
+    });
+  });
+  var blob=new Blob([JSON.stringify(full,null,2)],{type:'application/json'});
   var a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
   a.download='KIU_All_Programmes_'+new Date().toISOString().slice(0,10)+'.json';
-  a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},5000);
-  toast('Exported '+ps.length+' programme(s) to JSON','s');
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(a.href);},5000);
+  toast('Exported '+ps.length+' programme(s) with all content','s');
 }
 
 function exportSingle(id){
   var ps=getProgs(),p=ps.find(function(x){return x.id===id;});if(!p)return;
-  var blob=new Blob([JSON.stringify([p],null,2)],{type:'application/json'});
+  var full=Object.assign({},p,{
+    SC:lsGet('kiu_sc_'+id)||p.SC||{},
+    CD:lsGet('kiu_cd_'+id)||p.CD||{}
+  });
+  var blob=new Blob([JSON.stringify([full],null,2)],{type:'application/json'});
   var a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
   var nm=(p.meta&&p.meta.abbr||p.meta&&p.meta.name||'Programme').replace(/[^a-zA-Z0-9]/g,'_');
   a.download='KIU_'+nm+'_'+new Date().toISOString().slice(0,10)+'.json';
-  a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},5000);
-  toast('Exported "'+((p.meta&&p.meta.name)||'Programme')+'" to JSON','s');
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(a.href);},5000);
+  toast('Exported "'+((p.meta&&p.meta.name)||'Programme')+'" with all content','s');
 }
 
 function importProgrammes(inp){
@@ -1791,21 +1904,31 @@ function importProgrammes(inp){
   r.onload=function(e){
     try{
       var ps=JSON.parse(e.target.result);
-      if(!Array.isArray(ps))ps=[ps]; // handle single-programme export
+      if(!Array.isArray(ps))ps=[ps];
       if(!ps.length)throw new Error('No programmes found in file');
       var ex=getProgs(),added=0,updated=0;
       ps.forEach(function(p){
-        if(!p.id)p.id=Date.now()+Math.random();
+        if(!p.id)p.id=Date.now()+Math.floor(Math.random()*1000);
+        /* Save SC and CD to split keys */
+        if(p.SC&&Object.keys(p.SC).length)lsSet('kiu_sc_'+p.id,p.SC);
+        if(p.CD&&Object.keys(p.CD).length)lsSet('kiu_cd_'+p.id,p.CD);
+        /* Count and update header */
+        var secDone=SECTIONS.filter(function(s){return p.SC&&p.SC[s.key]&&p.SC[s.key].done;}).length;
+        var cdDone=(p.courses||[]).filter(function(c){return p.CD&&p.CD[c.code]&&p.CD[c.code].done;}).length;
+        /* Store header without SC/CD blobs */
+        var header=Object.assign({},p,{SC:undefined,CD:undefined,secCount:secDone,cdCount:cdDone,version:3});
+        delete header.SC;delete header.CD;
         var i=ex.findIndex(function(x){return x.id===p.id;});
-        if(i>=0){ex[i]=p;updated++;}else{ex.push(p);added++;}
+        if(i>=0){ex[i]=header;updated++;}else{ex.push(header);added++;}
       });
       saveProgs(ex);renderProgList();
       toast(added+' added, '+updated+' updated from import','s');
-    }catch(e){toast('Import failed: '+e.message,'e');}
+    }catch(err){toast('Import failed: '+err.message,'e');}
   };
   r.readAsText(file);inp.value='';
 }
 </script>
+
 
 
 <script>
@@ -1868,8 +1991,303 @@ async function dlDocFor(id){var ps=getProgs(),p=ps.find(function(x){return x.id=
 function init(){
   assignCodes();renderUCCList();renderProgList();
   setInterval(function(){fetch(API+'/api/health').catch(function(){});},13*60*1000);
+  if(typeof fsInit==='function')fsInit();
 }
 init();
+</script>
+<script>
+/* ═══════════════════════════════════════════════════════════
+   FILE SYSTEM ACCESS API — local folder persistence
+   One-time folder picker → silent forever via IndexedDB handle
+   Chrome/Edge 86+  (graceful no-op in Firefox/Safari)
+   ═══════════════════════════════════════════════════════════ */
+
+var _fsHandle = null;          // FileSystemDirectoryHandle
+var _fsSupported = (typeof window !== 'undefined') && ('showDirectoryPicker' in window);
+var IDB_DB = 'kiu_fs_v1';
+var IDB_STORE = 'handles';
+
+/* ── IndexedDB helpers (stores the directory handle across sessions) ── */
+function idbOpen(){
+  return new Promise(function(res,rej){
+    var req = indexedDB.open(IDB_DB, 1);
+    req.onupgradeneeded = function(e){ e.target.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = function(e){ res(e.target.result); };
+    req.onerror = function(){ rej(new Error('IDB open failed')); };
+  });
+}
+async function idbPut(key, val){
+  try{ var db=await idbOpen(); return new Promise(function(res,rej){
+    var tx=db.transaction(IDB_STORE,'readwrite');
+    var req=tx.objectStore(IDB_STORE).put(val,key);
+    req.onsuccess=function(){res(true);};req.onerror=function(){rej();};
+  });}catch(e){return false;}
+}
+async function idbGet(key){
+  try{ var db=await idbOpen(); return new Promise(function(res){
+    var tx=db.transaction(IDB_STORE,'readonly');
+    var req=tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess=function(){res(req.result||null);};
+    req.onerror=function(){res(null);};
+  });}catch(e){return null;}
+}
+async function idbDel(key){
+  try{ var db=await idbOpen(); return new Promise(function(res){
+    var tx=db.transaction(IDB_STORE,'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete=function(){res(true);};
+  });}catch(e){return false;}
+}
+
+/* ── Permission helper ── */
+async function fsVerifyPermission(handle, write){
+  if(!handle)return false;
+  var mode=write?'readwrite':'read';
+  try{
+    var q=await handle.queryPermission({mode:mode});
+    if(q==='granted')return true;
+    var r=await handle.requestPermission({mode:mode});
+    return r==='granted';
+  }catch(e){return false;}
+}
+
+/* ── Connect folder (one-time picker) ── */
+async function fsConnect(){
+  if(!_fsSupported){
+    alert('Your browser does not support the File System Access API.\nPlease use Google Chrome or Microsoft Edge.');
+    return;
+  }
+  try{
+    var h = await window.showDirectoryPicker({
+      id:'kiu-cbc',
+      mode:'readwrite',
+      startIn:'documents'
+    });
+    _fsHandle = h;
+    await idbPut('folder', h);
+    await fsUpdateStatus();
+    await fsScanFiles(true);
+    toast('\ud83d\udcc1 Folder connected: '+h.name,'s');
+  }catch(e){
+    if(e.name!=='AbortError') toast('Could not connect folder: '+e.message,'e');
+  }
+}
+
+/* ── Disconnect folder ── */
+async function fsDisconnect(){
+  _fsHandle=null;
+  await idbDel('folder');
+  fsUpdateStatus();
+  var ff=document.getElementById('fs-files');if(ff)ff.style.display='none';
+  var sb=document.getElementById('fs-scan-btn');if(sb)sb.style.display='none';
+  toast('Folder disconnected','i');
+}
+
+/* ── Restore handle from IndexedDB on page load ── */
+async function fsInit(){
+  if(!_fsSupported){
+    var bar=document.getElementById('fs-bar');
+    if(bar)bar.innerHTML='<div class="al aw" style="margin:0;font-size:12px">'
+      +'\u26a0 File System Access requires <strong>Chrome or Edge</strong>. '
+      +'Your browser will use localStorage only.</div>';
+    return;
+  }
+  var h = await idbGet('folder');
+  if(!h){fsUpdateStatus();return;}
+  var ok = await fsVerifyPermission(h, true);
+  if(ok){
+    _fsHandle=h;
+    await fsUpdateStatus();
+    await fsScanFiles(false); // silent scan on load
+  }else{
+    /* Permission not yet re-granted — show reconnect button */
+    _fsHandle=h;
+    fsUpdateStatus(true);
+  }
+}
+
+/* ── Update the status bar UI ── */
+async function fsUpdateStatus(needsReconnect){
+  var lbl=document.getElementById('fs-label');
+  var sub=document.getElementById('fs-sub');
+  var icon=document.getElementById('fs-icon');
+  var dot=document.getElementById('fs-indicator');
+  var btns=document.getElementById('fs-btns');
+  var bar=document.getElementById('fs-bar');
+  var sb=document.getElementById('fs-scan-btn');
+  if(!lbl)return;
+
+  if(!_fsHandle){
+    if(lbl) lbl.textContent='Local Folder: Not Connected';
+    if(sub) sub.textContent='Connect a folder so programmes are saved as JSON files on your computer.';
+    if(icon) icon.textContent='\ud83d\udcc2';
+    if(bar) bar.style.borderColor='var(--g200)';
+    if(dot){dot.style.display='none';}
+    if(btns) btns.innerHTML='<button class="btn bt sm" onclick="fsConnect()">\ud83d\udcc1 Connect Folder</button>';
+    if(sb) sb.style.display='none';
+    return;
+  }
+
+  if(needsReconnect){
+    if(lbl) lbl.textContent='\u26a0 Folder: '+_fsHandle.name+' — Permission needed';
+    if(sub) sub.textContent='Click Reconnect to re-grant access (required after browser restart).';
+    if(icon) icon.textContent='\ud83d\udcc1';
+    if(bar) bar.style.borderColor='var(--gd)';
+    if(dot){dot.style.display='block';dot.style.background='var(--gd)';}
+    if(btns) btns.innerHTML='<button class="btn bg sm" onclick="fsReconnect()">\u21ba Reconnect</button>'
+      +'<button class="btn bo sm" onclick="fsDisconnect()">Disconnect</button>';
+    if(sb) sb.style.display='none';
+    return;
+  }
+
+  /* Connected and permission granted */
+  if(lbl) lbl.innerHTML='\ud83d\udcc1 <span style="color:var(--gn)">Connected:</span> <strong>'+esc(_fsHandle.name)+'</strong>';
+  if(sub) sub.textContent='Programmes are automatically saved as JSON files in this folder. Accessible every visit.';
+  if(icon) icon.textContent='\u2705';
+  if(bar) bar.style.borderColor='var(--gn)';
+  if(dot){dot.style.display='block';dot.style.background='var(--gn)';}
+  if(btns) btns.innerHTML='<button class="btn bo sm" onclick="fsScanFiles(true)">\u21ba Scan Files</button>'
+    +'<button class="btn bo sm" onclick="fsDisconnect()">Disconnect</button>';
+  if(sb) sb.style.display='inline-flex';
+}
+
+/* ── Reconnect after browser restart ── */
+async function fsReconnect(){
+  if(!_fsHandle){await fsConnect();return;}
+  var ok = await fsVerifyPermission(_fsHandle, true);
+  if(ok){
+    await fsUpdateStatus();
+    await fsScanFiles(true);
+    toast('\u2705 Folder re-connected: '+_fsHandle.name,'s');
+  }else{
+    toast('Permission denied — please try Connect Folder again','e');
+    _fsHandle=null;await idbDel('folder');fsUpdateStatus();
+  }
+}
+
+/* ── Save a programme JSON to folder ── */
+async function fsSaveFile(prog){
+  if(!_fsHandle)return false;
+  var ok=await fsVerifyPermission(_fsHandle,true);
+  if(!ok){fsUpdateStatus(true);return false;}
+  try{
+    var m=prog.meta||prog;
+    var nm=((m.abbr||m.name||'Programme').replace(/[^a-zA-Z0-9]/g,'_').replace(/_+/g,'_').slice(0,50))+'.json';
+    var fh=await _fsHandle.getFileHandle(nm,{create:true});
+    var wr=await fh.createWritable();
+    await wr.write(JSON.stringify(prog,null,2));
+    await wr.close();
+    return nm;
+  }catch(e){console.error('fsSaveFile',e);return false;}
+}
+
+/* ── Scan folder and list JSON files ── */
+async function fsScanFiles(show){
+  if(!_fsHandle)return;
+  var ok=await fsVerifyPermission(_fsHandle,true);
+  if(!ok){fsUpdateStatus(true);return;}
+  var files=[];
+  try{
+    for await(var entry of _fsHandle.values()){
+      if(entry.kind==='file'&&entry.name.endsWith('.json')){
+        var file=await entry.getFile();
+        try{
+          var txt=await file.text();
+          var data=JSON.parse(txt);
+          var arr=Array.isArray(data)?data:[data];
+          arr.forEach(function(prog){
+            if(prog&&prog.meta){
+              var m=prog.meta;
+              var secDone=SECTIONS.filter(function(s){return prog.SC&&prog.SC[s.key]&&prog.SC[s.key].done;}).length;
+              var cdDone=(prog.courses||[]).filter(function(c){return prog.CD&&prog.CD[c.code]&&prog.CD[c.code].done;}).length;
+              files.push({name:entry.name,prog:prog,secDone:secDone,cdDone:cdDone,size:Math.round(file.size/1024),modified:new Date(file.lastModified)});
+            }
+          });
+        }catch(e){}
+      }
+    }
+  }catch(e){toast('Scan failed: '+e.message,'e');return;}
+
+  /* Render file list */
+  var ff=document.getElementById('fs-files');
+  if(!ff)return;
+  if(!files.length){
+    if(show)toast('No programme JSON files found in folder','i');
+    ff.style.display='none';return;
+  }
+  files.sort(function(a,b){return b.modified-a.modified;});
+  var html='<div class="card"><div class="card-hd" style="background:#065f46;display:flex;justify-content:space-between;align-items:center">'
+    +'<span>\ud83d\udcc1 Files in: '+esc(_fsHandle.name)+' ('+files.length+' programme'+(files.length>1?'s':'')+')</span>'
+    +'<span style="font-size:11px;opacity:.8">Auto-saves here on every Save</span></div>'
+    +'<div class="card-body" style="padding:10px">';
+  files.forEach(function(f){
+    var m=f.prog.meta,cs=f.prog.courses||[];
+    var pctS=Math.round(f.secDone/SECTIONS.length*100);
+    var pctC=cs.length?Math.round(f.cdDone/cs.length*100):0;
+    var colS=pctS===100?'var(--gn)':pctS>0?'var(--gd)':'var(--g500)';
+    var colC=pctC===100?'var(--gn)':pctC>0?'var(--gd)':'var(--g500)';
+    html+='<div style="border:1.5px solid var(--g200);border-radius:6px;padding:10px 12px;margin-bottom:6px;background:#fff;display:flex;align-items:center;gap:10px">'
+      +'<div style="flex:1">'
+      +'<div style="font-weight:700;color:var(--nv);font-size:13px">'+esc(m.name||f.name)+'</div>'
+      +'<div style="font-size:11px;color:var(--g500);margin-top:2px">'
+        +esc(m.abbr||'')+' \u00b7 Level '+(m.level||'?')+' \u00b7 '+cs.length+' courses'
+        +' \u00b7 '+f.size+' KB \u00b7 '+f.modified.toLocaleString('en-UG',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})
+      +'</div>'
+      +'<div style="display:flex;gap:14px;margin-top:5px">'
+      +'<span style="font-size:12px"><strong style="color:var(--nv)">Sections:</strong> <span style="color:'+colS+';font-weight:700">'+f.secDone+'/'+SECTIONS.length+' ('+pctS+'%)</span></span>'
+      +'<span style="font-size:12px"><strong style="color:var(--nv)">Course Units:</strong> <span style="color:'+colC+';font-weight:700">'+f.cdDone+'/'+cs.length+' ('+pctC+'%)</span></span>'
+      +'</div></div>'
+      +'<div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0">'
+      +'<button class="btn bt sm" onclick="fsLoadFile(\''+esc(f.name)+'\')">\u21a9 Load</button>'
+      +'</div></div>';
+  });
+  html+='</div></div>';
+  ff.innerHTML=html;
+  ff.style.display='block';
+}
+
+/* ── Load a programme from a folder file ── */
+async function fsLoadFile(filename){
+  if(!_fsHandle)return;
+  var ok=await fsVerifyPermission(_fsHandle,false);
+  if(!ok){fsUpdateStatus(true);return;}
+  try{
+    var fh=await _fsHandle.getFileHandle(filename);
+    var file=await fh.getFile();
+    var txt=await file.text();
+    var data=JSON.parse(txt);
+    var prog=Array.isArray(data)?data[0]:data;
+    if(!prog||!prog.meta){toast('Invalid programme file','e');return;}
+    var m=prog.meta;
+    sv('p-name',m.name);sv('p-award',m.award||'');sv('p-abbr',m.abbr||'');
+    sv('p-prefix',m.prefix||'');sv('p-school',m.school||'');
+    sv('p-dept',m.dept||'');sv('p-hod',m.hod||'');
+    var le=document.getElementById('p-level');if(le&&m.level)le.value=String(m.level);
+    var ye=document.getElementById('p-years');if(ye&&m.years)ye.value=String(m.years);
+    sv('p-mode',m.mode||'Full-time');sv('p-date',m.date||'');
+    if(m.admission)sv('p-admission',m.admission);
+    courses=JSON.parse(JSON.stringify(prog.courses||[]));
+    nextId=Math.max.apply(null,courses.map(function(c){return c.id||0;}).concat([0]))+1;
+    var savedSC=prog.SC||{};
+    SECTIONS.forEach(function(s){SC[s.key]=savedSC[s.key]||{text:'',done:false};});
+    CD=JSON.parse(JSON.stringify(prog.CD||prog.courseDetails||{}));
+    /* Also sync to localStorage so it appears in Saved Programmes list */
+    var ps=getProgs();
+    var idx=ps.findIndex(function(x){return x.meta&&x.meta.name===m.name;});
+    var secDone=SECTIONS.filter(function(s){return SC[s.key]&&SC[s.key].done;}).length;
+    var cdDone=courses.filter(function(c){return CD[c.code]&&CD[c.code].done;}).length;
+    var header={id:prog.id||Date.now(),savedAt:prog.savedAt||new Date().toISOString(),version:3,
+      meta:m,courses:JSON.parse(JSON.stringify(courses)),secCount:secDone,cdCount:cdDone};
+    if(idx>=0)ps[idx]=header;else ps.push(header);
+    saveProgs(ps);
+    if(prog.SC&&Object.keys(prog.SC).length)lsSet('kiu_sc_'+header.id,prog.SC);
+    if(prog.CD&&Object.keys(prog.CD).length)lsSet('kiu_cd_'+header.id,prog.CD);
+    assignCodes();renderUCCList();renderCurriculum();renderGenTab();renderProgList();
+    toast('\u2705 "'+m.name+'" loaded from folder \u2014 '
+      +courses.length+' courses, '+secDone+'/'+SECTIONS.length+' sections, '+cdDone+' course units','s');
+    switchTab('curriculum');
+  }catch(e){toast('Load failed: '+e.message,'e');}
+}
 </script>
 </body>
 </html>

@@ -456,7 +456,7 @@ var genAll=false;
 
 
 <script>
-/* REGISTRY SYNC */
+/* REGISTRY SYNC — with cross-programme comparison */
 function nameSim(a,b){
   a=(a||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
   b=(b||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
@@ -465,28 +465,89 @@ function nameSim(a,b){
   var ba=bg(a),bb=bg(b),n=0;ba.forEach(function(g){if(bb.has(g))n++;});
   return(2*n)/(ba.size+bb.size);
 }
-var _regData=[];
+
+var _regData=[];   // from server /api/registry
+var _localReg=[];  // built from all locally-saved programmes
 var _syncChoices={};
 
 async function fetchReg(){
-  try{var r=await fetch(API+'/api/registry',{signal:AbortSignal.timeout(12000)});
-    if(r.ok){var d=await r.json();_regData=d.courses||d||[];}}
-  catch(e){_regData=[];}
+  _regData=[];
+  try{
+    var r=await fetch(API+'/api/registry',{signal:AbortSignal.timeout(12000)});
+    if(r.ok){var d=await r.json();_regData=d.courses||d||[];}
+  }catch(e){}
   return _regData;
 }
 
+/* Build a local registry from ALL saved programmes in localStorage.
+   Each unique (name+code+NH) combination becomes a registry entry,
+   tagged with the programme it came from. */
+function buildLocalReg(){
+  _localReg=[];
+  var seen={};
+  try{
+    var ps=getProgs();
+    ps.forEach(function(prog){
+      var pm=prog.meta||prog;
+      (prog.courses||[]).forEach(function(c){
+        var nk=(c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+        if(nk.length<4)return;
+        // group by normalised name
+        if(!seen[nk])seen[nk]=[];
+        seen[nk].push({
+          code:c.code||'',name:c.name||'',prefix:c.prefix||'',
+          DH:c.DH||0,SH:c.SH||0,AH:c.AH||0,OH:c.OH||0,
+          tier:c.tier||4,programme:pm.name||'Unknown',
+          abbr:pm.abbr||''
+        });
+      });
+    });
+  }catch(e){}
+  // For each name group: if multiple entries exist pick the one with lowest prefix (most canonical)
+  Object.keys(seen).forEach(function(nk){
+    var entries=seen[nk];
+    // Sort: prefer entries with standard prefix codes (shorter), then alphabetically
+    entries.sort(function(a,b){
+      if(a.prefix.length!==b.prefix.length)return a.prefix.length-b.prefix.length;
+      return a.prefix.localeCompare(b.prefix);
+    });
+    var canonical=entries[0];
+    canonical._allVersions=entries;
+    _localReg.push(canonical);
+  });
+  return _localReg;
+}
+
+/* Find best match for a course in combined registry (server + local programmes) */
 function bestMatch(course){
+  var combined=_regData.concat(_localReg);
+  // Deduplicate combined by name
+  var seen2={};var uniq=[];
+  combined.forEach(function(r){
+    var nk=(r.name||'').toLowerCase().trim();
+    if(!seen2[nk]){seen2[nk]=true;uniq.push(r);}
+  });
   var best=null,bScore=0;
-  _regData.forEach(function(r){
+  uniq.forEach(function(r){
     if(!r.name)return;
+    var stripL=function(s){return(s||'').replace(/^(introduction to |fundamentals of |basic |applied |advanced |principles of )/i,'').trim();};
     var s=Math.max(
       nameSim(course.name,r.name),
-      nameSim((course.name||'').replace(/^(introduction to |fundamentals of |basic |applied |advanced )/i,'').trim(),
-               (r.name||'').replace(/^(introduction to |fundamentals of |basic |applied |advanced )/i,'').trim())
+      nameSim(stripL(course.name),stripL(r.name))
     );
     if(s>bScore){bScore=s;best=r;}
   });
-  return bScore>=0.72?{entry:best,score:bScore}:null;
+  if(bScore<0.72)return null;
+  return {entry:best,score:bScore};
+}
+
+/* Detect if current course code conflicts with the registry/local match */
+function codeConflict(course,regEntry){
+  if(!regEntry)return false;
+  var rc=(regEntry.code||'').toUpperCase().replace(/\s/g,'');
+  var cc=(course.code||'').toUpperCase().replace(/\s/g,'');
+  if(!rc||!cc)return false;
+  return rc!==cc;
 }
 
 async function syncWithRegistry(autoMode){
@@ -494,97 +555,137 @@ async function syncWithRegistry(autoMode){
   if(sp)sp.style.display='inline-block';
   if(rr){rr.style.display='block';
     rr.innerHTML='<div class="card"><div class="card-hd" style="background:#065f46">Fetching KIU Registry...</div>'
-      +'<div class="card-body" style="padding:20px;text-align:center"><span class="spin" style="display:inline-block;width:20px;height:20px;border:3px solid #065f46;border-top-color:transparent;border-radius:50%;animation:_sp .8s linear infinite"></span> Contacting registry server, please wait...</div></div>';}
+      +'<div class="card-body" style="padding:20px;text-align:center">'
+      +'<span class="spin" style="display:inline-block;width:20px;height:20px;border:3px solid #065f46;border-top-color:transparent;border-radius:50%;animation:_sp .8s linear infinite"></span>'
+      +' Building cross-programme registry, please wait...</div></div>';}
   await fetchReg();
+  buildLocalReg();
   if(sp)sp.style.display='none';
-  if(!_regData.length){
-    if(rr)rr.innerHTML='<div class="al aw">&#9888; Registry server unavailable. Make sure the Render backend is running (may take 30-60s to wake up), then try again.</div>';
-    toast('Registry offline','e');return;
+  if(!_regData.length&&!_localReg.length){
+    if(rr)rr.innerHTML='<div class="al aw">&#9888; No registry data available. Save at least one programme first, or ensure the backend is running.</div>';
+    toast('No registry data','e');return;
   }
-  _syncChoices={};renderSyncPanel();
+  _syncChoices={};
+  renderSyncPanel(autoMode);
 }
 
-function renderSyncPanel(){
+function renderSyncPanel(autoMode){
   var rr=document.getElementById('reg-results');if(!rr)return;
-  var groups=groupBySem(),html='',matchCount=0,keepCount=0;
+  var groups=groupBySem(),html='',matchCount=0,conflictCount=0,keepCount=0;
+
   groups.forEach(function(g){
-    html+='<div style="margin-bottom:18px">';
+    html+='<div style="margin-bottom:20px">';
     html+='<div style="background:var(--nv2);color:#fff;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:700;font-size:13px">'+getSL(g.year,g.sem)+'</div>';
     html+='<table style="width:100%;border-collapse:collapse;font-size:12px">';
     html+='<thead><tr style="background:var(--g100)">'
-         +'<th style="padding:6px 8px;border:1px solid var(--g200);width:34px">Use</th>'
-         +'<th style="padding:6px 8px;border:1px solid var(--g200)">Current Course (Imported)</th>'
-         +'<th style="padding:6px 8px;border:1px solid var(--g200);text-align:center;width:55px">NH</th>'
-         +'<th style="padding:6px 4px;border:1px solid var(--g200);text-align:center;width:24px">&#8680;</th>'
-         +'<th style="padding:6px 8px;border:1px solid var(--g200)">Registry Version</th>'
-         +'<th style="padding:6px 8px;border:1px solid var(--g200);text-align:center;width:55px">NH</th>'
-         +'<th style="padding:6px 8px;border:1px solid var(--g200);text-align:center;width:52px">Match</th>'
-         +'</tr></thead><tbody>';
+      +'<th style="padding:6px 8px;border:1px solid var(--g200);width:34px">Use</th>'
+      +'<th style="padding:6px 8px;border:1px solid var(--g200)">Current Course (Code + Name)</th>'
+      +'<th style="padding:6px 8px;border:1px solid var(--g200);text-align:center;width:50px">NH</th>'
+      +'<th style="padding:6px 4px;border:1px solid var(--g200);text-align:center;width:22px"></th>'
+      +'<th style="padding:6px 8px;border:1px solid var(--g200)">Registry / Cross-Programme Version</th>'
+      +'<th style="padding:6px 8px;border:1px solid var(--g200);text-align:center;width:50px">NH</th>'
+      +'<th style="padding:6px 8px;border:1px solid var(--g200);text-align:center;width:80px">Source</th>'
+      +'<th style="padding:6px 8px;border:1px solid var(--g200);text-align:center;width:50px">Match</th>'
+      +'</tr></thead><tbody>';
+
     g.courses.forEach(function(course){
       var uk=getUK(course);
+      var curNH=getNH(course);
+
       if(uk){
-        var nh=getNH(course);
-        html+='<tr style="background:#f0fafa"><td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;font-size:14px">&#128274;</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);color:var(--tl);font-weight:600">'+esc(course.name)+'</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'+nh+'</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;color:var(--tl)">&#9866;</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);color:var(--g500);font-style:italic">UCC &#8212; locked</td>'
-            +'<td colspan="2" style="padding:5px 8px;border:1px solid var(--g200)"></td></tr>';
+        html+='<tr style="background:#f0fafa">'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;font-size:14px">&#128274;</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);color:var(--tl);font-weight:600">'
+          +'<span style="font-family:var(--fm);font-size:10px;background:var(--nv);color:var(--gd2);padding:1px 5px;border-radius:3px;margin-right:4px">'+(course.code||'')+'</span>'
+          +esc(course.name)+'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'+curNH+'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;color:var(--tl)">&#9866;</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);color:var(--g500);font-style:italic" colspan="4">UCC / WRC &#8212; locked, never changed</td></tr>';
         return;
       }
-      var m=bestMatch(course),curNH=getNH(course);
+
+      var m=bestMatch(course);
       var cid='chk_'+course.id;
+
       if(m){
         matchCount++;
-        var regNH=(m.entry.DH||0)+(m.entry.SH||0)+(m.entry.AH||0)+(m.entry.OH||0);
+        var re=m.entry;
+        var regNH=(re.DH||0)+(re.SH||0)+(re.AH||0)+(re.OH||0);
         var pct=Math.round(m.score*100);
-        var diff=m.entry.name!==course.name||regNH!==curNH;
-        if(_syncChoices[course.id]===undefined)_syncChoices[course.id]=diff?m.entry:null;
+        var nameChange=re.name&&re.name!==course.name;
+        var codeChange=codeConflict(course,re);
+        var nhChange=regNH>0&&regNH!==curNH;
+        var prefChange=re.prefix&&re.prefix!==course.prefix;
+        var anyDiff=nameChange||codeChange||nhChange||prefChange;
+        if(anyDiff)conflictCount++;
+        if(_syncChoices[course.id]===undefined)_syncChoices[course.id]=anyDiff?re:null;
         var chk=_syncChoices[course.id]?'checked':'';
-        var rowBg=diff?'#fffbf0':'#f0fff8';
+        var rowBg=codeChange?'#fff0f0':nhChange?'#fffbf0':anyDiff?'#fffbf0':'#f0fff8';
+        var srcLabel=re.programme
+          ?('<span title="From: '+esc(re.programme)+'" style="background:#e8f4ff;color:var(--nv2);padding:2px 6px;border-radius:10px;font-size:10px;font-weight:700;white-space:nowrap">&#128193; '+esc((re.abbr||re.programme||'').slice(0,10))+'</span>')
+          :'<span style="background:#d4f0e4;color:var(--gn);padding:2px 6px;border-radius:10px;font-size:10px;font-weight:700">&#127963; Registry</span>';
+
         html+='<tr style="background:'+rowBg+'">'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'
-            +'<input type="checkbox" id="'+cid+'" data-cid="'+course.id+'" '+chk
-            +' onchange="_syncChoices['+course.id+']=this.checked?'+JSON.stringify(m.entry).replace(/'/g,"&#39;")+':null"></td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200)'+(diff?';color:var(--rd)':'')+'">'
-            +'<span style="font-family:var(--fm);font-size:10px;background:var(--nv);color:var(--gd2);padding:1px 5px;border-radius:3px;margin-right:4px">'+(course.code||'?')+'</span>'
-            +esc(course.name)+'</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;font-weight:700'+(diff&&regNH!==curNH?';color:var(--rd)':'')+'">'+curNH+'</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;color:var(--gd);font-size:15px">&#8680;</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);font-weight:600;color:#065f46">'
-            +'<span style="font-family:var(--fm);font-size:10px;background:#065f46;color:#fff;padding:1px 5px;border-radius:3px;margin-right:4px">'+(m.entry.code||'?')+'</span>'
-            +esc(m.entry.name||'')+'</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;font-weight:700'+(diff&&regNH!==curNH?';color:#065f46':'')+'">'+regNH+'</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'
-            +'<span style="background:'+(pct>=90?'#d4f0e4':pct>=80?'#fff8e6':'#ffe8e8')+';color:'+(pct>=90?'#1a7a4a':pct>=80?'#8a6300':'#c00')+';padding:2px 6px;border-radius:10px;font-weight:700;font-size:11px">'+pct+'%</span>'
-            +'</td></tr>';
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'
+          +'<input type="checkbox" id="'+cid+'" data-cid="'+course.id+'" '+chk
+          +' onchange="_syncChoices['+course.id+']=this.checked?'+JSON.stringify(re).replace(/\\/g,'\\\\').replace(/'/g,'&#39;')+':null"></td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200)'+(codeChange?';border-left:4px solid var(--rd)':anyDiff?';border-left:4px solid var(--gd)':'')+'">'
+          +'<span style="font-family:var(--fm);font-size:10px;background:'+(codeChange?'var(--rd)':'var(--nv)')+';color:'+(codeChange?'#fff':'var(--gd2)')+';padding:1px 5px;border-radius:3px;margin-right:4px;'+(codeChange?'text-decoration:line-through':'')+'" title="'+(codeChange?'Code conflict with registry!':'')+'">'+(course.code||'?')+'</span>'
+          +(codeChange?'<span style="background:var(--rdl);color:var(--rd);font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;margin-right:4px">CODE CONFLICT</span>':'')
+          +esc(course.name)+'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;font-weight:700'+(nhChange?';color:var(--rd)':'')+'">'+curNH+'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;color:var(--gd);font-size:15px">&#8680;</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);font-weight:600;color:#065f46">'
+          +'<span style="font-family:var(--fm);font-size:10px;background:#065f46;color:#fff;padding:1px 5px;border-radius:3px;margin-right:4px">'+(re.code||re.prefix||'')+'</span>'
+          +esc(re.name||'')
+          // Show all versions if multiple programmes have this course
+          +(re._allVersions&&re._allVersions.length>1
+            ?'<div style="font-size:10px;color:var(--g500);margin-top:3px">Also in: '+re._allVersions.slice(1,4).map(function(v){return esc(v.abbr||v.programme||'');}).join(', ')+'</div>'
+            :'')
+          +'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;font-weight:700'+(nhChange?';color:#065f46':'')+'">'+((re.DH||0)+(re.SH||0)+(re.AH||0)+(re.OH||0)||'-')+'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'+srcLabel+'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'
+          +'<span style="background:'+(pct>=90?'#d4f0e4':pct>=80?'#fff8e6':'#ffe8e8')+';color:'+(pct>=90?'#1a7a4a':pct>=80?'#8a6300':'#c00')+';padding:2px 6px;border-radius:10px;font-weight:700;font-size:11px">'+pct+'%</span>'
+          +'</td></tr>';
+
       }else{
         keepCount++;
         html+='<tr style="background:#fafafa">'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;color:var(--g300)" title="No registry match">&#9711;</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200)">'
-            +'<span style="font-family:var(--fm);font-size:10px;background:var(--nv);color:var(--gd2);padding:1px 5px;border-radius:3px;margin-right:4px">'+(course.code||'?')+'</span>'
-            +esc(course.name)+'</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'+curNH+'</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;color:var(--g300)">-</td>'
-            +'<td style="padding:5px 8px;border:1px solid var(--g200);color:var(--g500);font-style:italic" colspan="3">No registry match &#8212; new course, keep as-is</td></tr>';
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;color:var(--g300)" title="No match - keep own">&#9711;</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200)">'
+          +'<span style="font-family:var(--fm);font-size:10px;background:var(--nv);color:var(--gd2);padding:1px 5px;border-radius:3px;margin-right:4px">'+(course.code||'?')+'</span>'
+          +esc(course.name)+'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center">'+curNH+'</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);text-align:center;color:var(--g300)">-</td>'
+          +'<td style="padding:5px 8px;border:1px solid var(--g200);color:var(--g500);font-style:italic" colspan="4">No registry match &#8212; new programme-specific course</td></tr>';
       }
     });
     html+='</tbody></table></div>';
   });
 
+  var regSource=_regData.length?_regData.length+' server + '+_localReg.length+' local':_localReg.length+' local (server offline)';
+  var legendHtml='<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;margin-bottom:12px">'
+    +'<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;background:var(--rdl);border-left:4px solid var(--rd);display:inline-block"></span> Code conflict with registry</span>'
+    +'<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;background:#fffbf0;border-left:4px solid var(--gd);display:inline-block"></span> NH or name mismatch</span>'
+    +'<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;background:#f0fff8;display:inline-block"></span> Already matches registry</span>'
+    +'</div>';
+
   var panel='<div class="card" id="sync-panel">'
     +'<div class="card-hd" style="background:#065f46;display:flex;justify-content:space-between;align-items:center">'
-    +'<span>&#9654; Registry Comparison &#8212; Semester by Semester ('+_regData.length+' courses in registry)</span>'
+    +'<span>&#9654; Registry &amp; Cross-Programme Comparison &#8212; Semester by Semester</span>'
     +'<button class="btn xs" style="background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.3)" onclick="closeRegResults()">&#10005; Close</button>'
     +'</div>'
     +'<div class="card-body">'
-    +'<div class="al ai" style="margin-bottom:12px">&#8505; <strong>Tick</strong> a row to replace with the registry version. <strong>Untick</strong> to keep your current version. UCC rows are always locked. Click <strong>Apply Selected</strong> to commit changes.</div>'
+    +'<div class="al ai" style="margin-bottom:10px">&#8505; Comparing against <strong>KIU Registry + all saved programmes</strong> ('+(regSource)+'). '
+    +'Rows with <strong>CODE CONFLICT</strong> badges have wrong codes that clash with another programme. '
+    +'<strong>Tick</strong> to pull the correct version. <strong>Apply Selected</strong> to commit.</div>'
+    +legendHtml
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">'
     +'<button class="btn sm" style="background:#065f46;color:#fff" onclick="applySync()">&#10003; Apply Selected</button>'
-    +'<button class="btn bo sm" onclick="selectAllSync(true)">&#9745; Select All</button>'
+    +'<button class="btn bo sm" onclick="selectAllSync(true)">&#9745; Select All Conflicts</button>'
     +'<button class="btn bo sm" onclick="selectAllSync(false)">&#9633; Deselect All</button>'
-    +'<span style="margin-left:auto;font-size:12px;color:var(--g500)">'+matchCount+' matches | '+keepCount+' new courses (no match)</span>'
+    +'<span style="margin-left:auto;font-size:12px;color:var(--g500)">'+conflictCount+' conflicts | '+matchCount+' total matches | '+keepCount+' new courses</span>'
     +'</div>'
     +html
     +'<div style="display:flex;gap:8px;margin-top:14px">'
@@ -608,21 +709,22 @@ async function applySync(){
   var applied=0,contentLoaded=0;
   courses.forEach(function(course){
     var reg=_syncChoices[course.id];if(!reg)return;
-    course.name=reg.name||course.name;
-    course.prefix=reg.prefix||course.prefix;
-    if(reg.DH!==undefined)course.DH=reg.DH;
-    if(reg.SH!==undefined)course.SH=reg.SH;
-    if(reg.AH!==undefined)course.AH=reg.AH;
-    if(reg.OH!==undefined)course.OH=reg.OH;
+    // Update identity fields; keep year/sem (position stays the same)
+    if(reg.name)course.name=reg.name;
+    if(reg.prefix)course.prefix=reg.prefix;
+    if(reg.DH!==undefined&&reg.DH>0)course.DH=reg.DH;
+    if(reg.SH!==undefined&&reg.SH>0)course.SH=reg.SH;
+    if(reg.AH!==undefined&&reg.AH>0)course.AH=reg.AH;
+    if(reg.OH!==undefined&&reg.OH>0)course.OH=reg.OH;
     if(reg.tier!==undefined)course.tier=reg.tier;
     applied++;
   });
   if(!applied){toast('No courses selected','i');return;}
   assignCodes();enforceSems();assignCodes();
-  // Try to pull generated content from registry for each applied course
-  var done_courses=courses.filter(function(c){return _syncChoices[c.id];});
-  for(var i=0;i<done_courses.length;i++){
-    var c=done_courses[i];var reg=_syncChoices[c.id];
+  // Try to pull generated content for each applied course
+  var appliedCourses=courses.filter(function(c){return _syncChoices[c.id];});
+  for(var i=0;i<appliedCourses.length;i++){
+    var c=appliedCourses[i],reg=_syncChoices[c.id];
     if(!reg||!reg.code)continue;
     try{var r=await fetch(API+'/api/course-detail/'+encodeURIComponent(reg.code),{signal:AbortSignal.timeout(8000)});
       if(r.ok){var d=await r.json();if(d&&d.text&&d.text.length>80){CD[c.code]={text:d.text,done:true};contentLoaded++;}}}
@@ -631,10 +733,10 @@ async function applySync(){
   renderCurriculum();renderGenTab();
   var rr=document.getElementById('reg-results');
   if(rr)rr.innerHTML='<div class="al as" style="font-size:13px"><strong>&#10004; Applied!</strong> '
-    +applied+' course(s) updated from registry.'
-    +(contentLoaded?' '+contentLoaded+' course content(s) loaded from registry.':'')
+    +applied+' course(s) corrected from registry.'
+    +(contentLoaded?' '+contentLoaded+' course content(s) loaded.':'')
     +'&nbsp;<button class="btn bt xs" onclick="closeRegResults()">Close</button></div>';
-  toast(applied+' courses updated'+(contentLoaded?', '+contentLoaded+' contents loaded':''),'s');
+  toast(applied+' courses corrected'+(contentLoaded?', '+contentLoaded+' contents loaded':''),'s');
 }
 </script>
 

@@ -456,7 +456,23 @@ var genAll=false;
 
 
 <script>
-/* REGISTRY SYNC — exact level match + year/sem correction */
+/* REGISTRY SYNC — strict level isolation + cross-level alerts */
+
+/* KIU code format: PREFIX LYSerial  e.g. ITE 72102 → L=7, Y=2, S=1, serial=02
+   getCodeLevel extracts the UHEQF level digit from the numeric part of the code */
+function getCodeLevel(code){
+  if(!code)return null;
+  var m=(code||'').replace(/\s+/g,' ').trim().match(/\s(\d)/);
+  return m?parseInt(m[1]):null;
+}
+function getCodeYear(code){
+  var m=(code||'').replace(/\s+/g,' ').trim().match(/\s\d(\d)/);
+  return m?parseInt(m[1]):null;
+}
+function getCodeSem(code){
+  var m=(code||'').replace(/\s+/g,' ').trim().match(/\s\d\d(\d)/);
+  return m?String(m[1]):null;
+}
 
 function nameSim(a,b){
   a=(a||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
@@ -477,31 +493,31 @@ function isUCCByName(name){
 }
 
 var _regCache=null;
-var _syncChoices={};   // courseId -> {entry, moveTo:{year,sem}|null}  OR null (keep own)
+var _syncChoices={};
 
-/* Build Map from all saved programmes filtered by EXACT level number */
+/* Build local registry from saved programmes AT EXACT SAME LEVEL */
 function buildLocalReg(exactLevel){
   var seen=new Map();
   try{
     getProgs().forEach(function(prog){
       var pm=prog.meta||prog;
-      if(parseInt(pm.level||7)!==exactLevel)return;
+      if(parseInt(pm.level||7)!==exactLevel)return;  // strict: must match exactly
       (prog.courses||[]).forEach(function(c){
         if(isUCCByName(c.name))return;
         var k=normKey(c.name);if(!k||k.length<4)return;
+        var codeLevel=getCodeLevel(c.code);
+        if(codeLevel&&codeLevel!==exactLevel)return;  // skip cross-level codes
         if(!seen.has(k)){
           seen.set(k,{
             code:c.code||'',name:c.name||'',prefix:c.prefix||'',
             DH:c.DH||0,SH:c.SH||0,AH:c.AH||0,OH:c.OH||0,
             year:c.year||1,sem:c.sem||'1',tier:c.tier||4,
             programme:pm.name||'',abbr:pm.abbr||'',_src:'local',
-            _allProg:[pm.abbr||pm.name||'']
+            _allProg:[pm.abbr||pm.name||''],_level:exactLevel
           });
         }else{
-          var ex=seen.get(k);
-          var tag=pm.abbr||pm.name||'';
+          var ex=seen.get(k),tag=pm.abbr||pm.name||'';
           if((ex._allProg||[]).indexOf(tag)<0)(ex._allProg=ex._allProg||[]).push(tag);
-          // keep the entry with the higher year/sem (most senior placement)
         }
       });
     });
@@ -514,11 +530,20 @@ async function buildRegistry(exactLevel){
   var serverEntries=[];
   try{
     var r=await fetch(API+'/api/registry?level='+exactLevel,{signal:AbortSignal.timeout(4000)});
-    if(r.ok){var d=await r.json();serverEntries=d.courses||d||[];}
+    if(r.ok){var d=await r.json();
+      // Filter server results: only keep entries whose code level matches exactLevel
+      (d.courses||d||[]).forEach(function(e){
+        if(!e.name)return;
+        var cl=getCodeLevel(e.code);
+        if(cl&&cl!==exactLevel)return;  // reject wrong-level entries from server too
+        serverEntries.push(Object.assign({_src:'server',_level:exactLevel},e));
+      });
+    }
   }catch(e){}
+  // Build O(1) map — server wins over local
   var map=new Map();
   localEntries.forEach(function(e){var k=normKey(e.name);if(k&&!map.has(k))map.set(k,e);});
-  serverEntries.forEach(function(e){var k=normKey(e.name);if(k)map.set(k,Object.assign({_src:'server'},e));});
+  serverEntries.forEach(function(e){var k=normKey(e.name);if(k)map.set(k,e);});
   _regCache={level:exactLevel,server:serverEntries,local:localEntries,map:map};
   return _regCache;
 }
@@ -526,17 +551,23 @@ async function buildRegistry(exactLevel){
 function bestMatch(course){
   if(!_regCache||!_regCache.map)return null;
   var map=_regCache.map;
-  // O(1) direct lookup
   var k1=normKey(course.name),k2=normKey(stripPfx(course.name));
   if(k1&&map.has(k1))return{entry:map.get(k1),score:1.0};
   if(k2&&map.has(k2))return{entry:map.get(k2),score:0.98};
-  // Similarity fallback
   var best=null,bScore=0;
   map.forEach(function(entry){
     var s=Math.max(nameSim(course.name,entry.name),nameSim(stripPfx(course.name),stripPfx(entry.name)));
     if(s>bScore){bScore=s;best=entry;}
   });
   return bScore>=0.72?{entry:best,score:bScore}:null;
+}
+
+/* Detect cross-level code usage — e.g. Level-7 code in a Level-5 programme */
+function crossLevelAlert(courseCode,progLevel){
+  var cl=getCodeLevel(courseCode);
+  if(!cl||cl===progLevel)return null;
+  return{courseLevel:cl,progLevel:progLevel,
+    msg:'Level-'+cl+' code in a Level-'+progLevel+' programme'};
 }
 function codeConflict(course,re){
   var rc=(re.code||'').toUpperCase().replace(/\s/g,''),cc=(course.code||'').toUpperCase().replace(/\s/g,'');
@@ -551,13 +582,13 @@ async function syncWithRegistry(autoMode){
   var sp=document.getElementById('sync-sp'),rr=document.getElementById('reg-results');
   if(sp)sp.style.display='inline-block';
   if(rr){rr.style.display='block';
-    rr.innerHTML='<div class="card"><div class="card-hd" style="background:#065f46">Building registry...</div>'
-      +'<div class="card-body" style="padding:14px 18px;display:flex;align-items:center;gap:10px">'
+    rr.innerHTML='<div class="card"><div class="card-hd" style="background:#065f46">Scanning registry...</div>'
+      +'<div class="card-body" style="padding:12px 18px;display:flex;align-items:center;gap:10px">'
       +'<span class="spin" style="display:inline-block;width:16px;height:16px;border:2px solid #065f46;border-top-color:transparent;border-radius:50%;animation:_sp .7s linear infinite"></span>'
-      +'<span style="font-size:13px" id="sync-msg">Loading...</span></div></div>';}
+      +'<span id="sync-msg" style="font-size:13px">Loading...</span></div></div>';}
   var p=getProg(),lvl=parseInt(p.level||7);
   var msg=document.getElementById('sync-msg');
-  if(msg)msg.textContent='Comparing Level '+lvl+' courses only...';
+  if(msg)msg.textContent='Comparing Level-'+lvl+' courses only (strict)...';
   await buildRegistry(lvl);
   if(sp)sp.style.display='none';
   _syncChoices={};
@@ -567,7 +598,29 @@ async function syncWithRegistry(autoMode){
 function renderSyncPanel(exactLevel){
   var rr=document.getElementById('reg-results');if(!rr)return;
   var reg=_regCache||{map:new Map(),server:[],local:[]};
-  var groups=groupBySem(),html='',matchCount=0,conflictCount=0,keepCount=0,semMoveCount=0;
+  var groups=groupBySem(),html='',matchCount=0,conflictCount=0,keepCount=0,semMoveCount=0,crossLevelCount=0;
+
+  // ── Cross-level alert banner: scan all courses for wrong-level codes ──
+  var crossLevelCourses=[];
+  courses.forEach(function(c){
+    var alert=crossLevelAlert(c.code,exactLevel);
+    if(alert)crossLevelCourses.push({course:c,alert:alert});
+  });
+
+  var crossBanner='';
+  if(crossLevelCourses.length>0){
+    crossLevelCount=crossLevelCourses.length;
+    crossBanner='<div style="background:#fff0f0;border:2px solid var(--rd);border-radius:6px;padding:10px 14px;margin-bottom:14px">'
+      +'<div style="font-weight:700;color:var(--rd);font-size:13px;margin-bottom:6px">&#9888; LEVEL MISMATCH DETECTED — '+crossLevelCount+' course(s) have wrong-level codes</div>'
+      +'<div style="font-size:12px;color:var(--g700);margin-bottom:8px">This is a <strong>Level-'+exactLevel+' programme</strong>, but the following courses carry Level-'+crossLevelCourses[0].alert.courseLevel+' codes. '
+      +'This may cause NCHE submission rejection. Tick these rows in the table below and click <strong>Apply Selected</strong> to fix.</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:5px">'
+      +crossLevelCourses.map(function(x){
+        return'<span style="background:var(--rdl);color:var(--rd);padding:2px 8px;border-radius:4px;font-size:11px;font-family:var(--fm)">'
+          +esc(x.course.code||'?')+' '+esc(x.course.name)+'</span>';
+      }).join('')
+      +'</div></div>';
+  }
 
   groups.forEach(function(g){
     html+='<div style="margin-bottom:18px">';
@@ -576,13 +629,13 @@ function renderSyncPanel(exactLevel){
     html+='<thead><tr style="background:var(--g100)">'
       +'<th style="padding:5px 7px;border:1px solid var(--g200);width:30px">Use</th>'
       +'<th style="padding:5px 7px;border:1px solid var(--g200)">Current Course</th>'
-      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:46px">NH</th>'
+      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:44px">NH</th>'
       +'<th style="padding:5px 4px;border:1px solid var(--g200);width:18px"></th>'
       +'<th style="padding:5px 7px;border:1px solid var(--g200)">Level-'+exactLevel+' Registry Match</th>'
-      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:46px">NH</th>'
-      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:72px">Placement</th>'
-      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:68px">Source</th>'
-      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:46px">Match</th>'
+      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:44px">NH</th>'
+      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:76px">Placement</th>'
+      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:60px">Source</th>'
+      +'<th style="padding:5px 7px;border:1px solid var(--g200);text-align:center;width:44px">Match</th>'
       +'</tr></thead><tbody>';
 
     g.courses.forEach(function(course){
@@ -597,7 +650,10 @@ function renderSyncPanel(exactLevel){
         return;
       }
 
+      // Cross-level check for this specific course
+      var clAlert=crossLevelAlert(course.code,exactLevel);
       var m=bestMatch(course);
+
       if(m){
         matchCount++;
         var re=m.entry,pct=Math.round(m.score*100);
@@ -607,40 +663,36 @@ function renderSyncPanel(exactLevel){
         var nameDiff=re.name&&re.name!==course.name;
         var prefDiff=re.prefix&&re.prefix!==course.prefix;
         var hasSemDiff=semDiff(course,re);
-        var anyDiff=codeCon||nhDiff||nameDiff||prefDiff||hasSemDiff;
+        var anyDiff=codeCon||nhDiff||nameDiff||prefDiff||hasSemDiff||!!clAlert;
         if(anyDiff)conflictCount++;
         if(hasSemDiff)semMoveCount++;
-
         if(_syncChoices[course.id]===undefined){
           _syncChoices[course.id]=anyDiff?{entry:re,moveTo:hasSemDiff?{year:re.year,sem:re.sem}:null}:null;
         }
         var chkData=_syncChoices[course.id];
         var chk=chkData?'checked':'';
         var moveChecked=(chkData&&chkData.moveTo)?'checked':'';
-
-        var rowBg=codeCon?'#fff0f0':hasSemDiff?'#f5f0ff':anyDiff?'#fffbf0':'#f0fff8';
-
-        // Placement badge
-        var curPlacement='Yr'+course.year+'/S'+course.sem;
-        var regPlacement=re.year?'Yr'+(re.year||'?')+'/S'+(re.sem||'?'):'—';
+        var rowBg=clAlert?'#ffe4e4':codeCon?'#fff0f0':hasSemDiff?'#f5f0ff':anyDiff?'#fffbf0':'#f0fff8';
+        var leftBorder=clAlert?';border-left:4px solid #dc2626':codeCon?';border-left:3px solid var(--rd)':hasSemDiff?';border-left:3px solid #9333ea':anyDiff?';border-left:3px solid var(--gd)':'';
         var placementHtml=hasSemDiff
-          ?('<span style="background:#f5f0ff;color:#6B21A8;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #d8b4fe" title="Registry places this at Yr'+re.year+' Sem'+re.sem+'">'+curPlacement+'&#8594;'+regPlacement+'</span>')
-          :('<span style="color:var(--g500);font-size:11px">'+curPlacement+'</span>');
-
+          ?'<span style="background:#f5f0ff;color:#6B21A8;padding:1px 5px;border-radius:10px;font-size:10px;font-weight:700">Yr'+course.year+'/S'+course.sem+'&#8594;Yr'+(re.year||'?')+'/S'+(re.sem||'?')+'</span>'
+            +'<div style="margin-top:3px;font-size:10px"><label style="display:flex;align-items:center;justify-content:center;gap:3px;cursor:pointer;color:#6B21A8;font-weight:700">'
+            +'<input type="checkbox" id="mv_'+course.id+'" '+moveChecked
+            +' onchange="toggleMove('+course.id+',this.checked,'+(re.year||1)+',\''+String(re.sem||'1')+'\')"> Move &#8594; Yr'+(re.year||'?')+'/S'+(re.sem||'?')+'</label></div>'
+          :'<span style="color:var(--g500);font-size:11px">Yr'+course.year+'/S'+course.sem+'</span>';
         var srcLbl=re._src==='server'
           ?'<span style="background:#d4f0e4;color:var(--gn);padding:1px 5px;border-radius:10px;font-size:10px;font-weight:700">&#127963; Server</span>'
           :'<span style="background:#e8f4ff;color:var(--nv2);padding:1px 5px;border-radius:10px;font-size:10px;font-weight:700" title="'+esc(re.programme||'')+'">&#128193; '+esc((re.abbr||re.programme||'Local').slice(0,10))+'</span>';
-
-        // Serialise entry for inline onchange (safe JSON)
         var entryJson=JSON.stringify(re).replace(/\\/g,'\\\\').replace(/'/g,'&#39;');
 
         html+='<tr style="background:'+rowBg+'">'
           +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">'
           +'<input type="checkbox" id="chk_'+course.id+'" data-cid="'+course.id+'" '+chk
           +' onchange="toggleChoice('+course.id+',this.checked,'+entryJson+')"></td>'
-          +'<td style="padding:4px 7px;border:1px solid var(--g200)'+(codeCon?';border-left:3px solid var(--rd)':hasSemDiff?';border-left:3px solid #9333ea':anyDiff?';border-left:3px solid var(--gd)':'')+'">'
-          +'<span style="font-family:var(--fm);font-size:10px;background:'+(codeCon?'var(--rd)':'var(--nv)')+';color:#fff;padding:1px 5px;border-radius:3px;margin-right:3px">'+(course.code||'?')+'</span>'
-          +(codeCon?'<span style="background:var(--rdl);color:var(--rd);font-size:9px;font-weight:700;padding:0 4px;border-radius:3px;margin-right:3px">CODE&#9888;</span>':'')
+          +'<td style="padding:4px 7px;border:1px solid var(--g200)'+leftBorder+'">'
+          +'<span style="font-family:var(--fm);font-size:10px;background:'+(clAlert||codeCon?'var(--rd)':'var(--nv)')+';color:#fff;padding:1px 5px;border-radius:3px;margin-right:3px">'+(course.code||'?')+'</span>'
+          +(clAlert?'<span style="background:#fee2e2;color:#dc2626;font-size:9px;font-weight:700;padding:0 5px;border-radius:3px;margin-right:3px">L'+clAlert.courseLevel+' IN L'+clAlert.progLevel+' &#9888;</span>':'')
+          +(codeCon&&!clAlert?'<span style="background:var(--rdl);color:var(--rd);font-size:9px;font-weight:700;padding:0 4px;border-radius:3px;margin-right:3px">CODE&#9888;</span>':'')
           +esc(course.name)+'</td>'
           +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center;font-weight:700'+(nhDiff?';color:var(--rd)':'')+'">'+curNH+'</td>'
           +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center;color:var(--gd)">&#8680;</td>'
@@ -650,42 +702,54 @@ function renderSyncPanel(exactLevel){
           +(re._allProg&&re._allProg.length>1?'<span style="font-size:10px;color:var(--g500);margin-left:3px">also: '+re._allProg.slice(1,3).map(function(v){return esc(v);}).join(', ')+'</span>':'')
           +'</td>'
           +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center;font-weight:700'+(nhDiff?';color:#065f46':'')+'">'+regNH+'</td>'
-          +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">'
-          +placementHtml
-          // Move checkbox shown when there is a semester difference
-          +(hasSemDiff
-            ?'<div style="margin-top:3px;font-size:10px"><label style="display:flex;align-items:center;justify-content:center;gap:3px;cursor:pointer;color:#6B21A8;font-weight:700">'
-              +'<input type="checkbox" id="mv_'+course.id+'" '+moveChecked
-              +' onchange="toggleMove('+course.id+',this.checked,'+re.year+',\''+String(re.sem||'1')+'\')"> Move &#8594; Yr'+re.year+'/S'+re.sem+'</label></div>'
-            :'')
-          +'</td>'
+          +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">'+placementHtml+'</td>'
           +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">'+srcLbl+'</td>'
           +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">'
           +'<span style="background:'+(pct>=90?'#d4f0e4':pct>=80?'#fff8e6':'#ffe8e8')+';color:'+(pct>=90?'#1a7a4a':pct>=80?'#8a6300':'#c00')+';padding:1px 6px;border-radius:10px;font-weight:700;font-size:11px">'+pct+'%</span>'
           +'</td></tr>';
       }else{
-        keepCount++;
-        html+='<tr style="background:#fafafa">'
-          +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center;color:var(--g300)">&#9711;</td>'
-          +'<td style="padding:4px 7px;border:1px solid var(--g200)">'
-          +'<span style="font-family:var(--fm);font-size:10px;background:var(--nv);color:var(--gd2);padding:1px 5px;border-radius:3px;margin-right:3px">'+(course.code||'?')+'</span>'+esc(course.name)+'</td>'
-          +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">'+curNH+'</td>'
-          +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center;color:var(--g300)">-</td>'
-          +'<td style="padding:4px 7px;border:1px solid var(--g200);color:var(--g500);font-style:italic" colspan="5">No Level-'+exactLevel+' match — new course, keep as-is</td></tr>';
+        // No same-level match — but check if a cross-level match exists and warn
+        var anyLevelMatch=null;
+        if(clAlert){
+          // Already has a wrong-level code — it IS the cross-level issue
+          conflictCount++;crossLevelCount++;
+          html+='<tr style="background:#ffe4e4">'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">&#9888;</td>'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);border-left:4px solid #dc2626">'
+            +'<span style="font-family:var(--fm);font-size:10px;background:#dc2626;color:#fff;padding:1px 5px;border-radius:3px;margin-right:3px">'+(course.code||'?')+'</span>'
+            +'<span style="background:#fee2e2;color:#dc2626;font-size:9px;font-weight:700;padding:0 5px;border-radius:3px;margin-right:3px">L'+clAlert.courseLevel+' IN L'+clAlert.progLevel+' &#9888;</span>'
+            +esc(course.name)+'</td>'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">'+curNH+'</td>'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center;color:var(--rd)">!</td>'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);color:#dc2626;font-weight:700" colspan="5">'
+            +'Level-'+clAlert.courseLevel+' code used in a Level-'+clAlert.progLevel+' programme. '
+            +'No same-level registry entry found. Please rename the prefix and re-code this course to Level '+clAlert.progLevel+'.'
+            +'</td></tr>';
+        }else{
+          keepCount++;
+          html+='<tr style="background:#fafafa">'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center;color:var(--g300)">&#9711;</td>'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200)">'
+            +'<span style="font-family:var(--fm);font-size:10px;background:var(--nv);color:var(--gd2);padding:1px 5px;border-radius:3px;margin-right:3px">'+(course.code||'?')+'</span>'+esc(course.name)+'</td>'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center">'+curNH+'</td>'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);text-align:center;color:var(--g300)">-</td>'
+            +'<td style="padding:4px 7px;border:1px solid var(--g200);color:var(--g500);font-style:italic" colspan="5">No Level-'+exactLevel+' match — new course, keep as-is</td></tr>';
+        }
       }
     });
     html+='</tbody></table></div>';
   });
 
   var src=reg.server.length
-    ?reg.server.length+' server + '+reg.local.length+' local (Level '+exactLevel+')'
-    :reg.local.length+' local Level-'+exactLevel+' programmes (server offline)';
+    ?reg.server.length+' server + '+reg.local.length+' local (Level-'+exactLevel+' only)'
+    :reg.local.length+' local Level-'+exactLevel+' programmes'+(reg.server.length===0?' (server offline)':'');
 
-  var legend='<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;margin-bottom:10px;align-items:center">'
+  var legend='<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:11px;margin-bottom:10px;align-items:center">'
+    +'<span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:14px;background:#ffe4e4;border-left:4px solid #dc2626;display:inline-block"></span>Level mismatch (critical)</span>'
     +'<span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:14px;background:var(--rdl);border-left:3px solid var(--rd);display:inline-block"></span>Code conflict</span>'
     +'<span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:14px;background:#f5f0ff;border-left:3px solid #9333ea;display:inline-block"></span>Wrong semester</span>'
-    +'<span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:14px;background:#fffbf0;border-left:3px solid var(--gd);display:inline-block"></span>NH/name mismatch</span>'
-    +'<span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:14px;background:#f0fff8;display:inline-block"></span>Already correct</span>'
+    +'<span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:14px;background:#fffbf0;border-left:3px solid var(--gd);display:inline-block"></span>NH/name diff</span>'
+    +'<span style="display:flex;align-items:center;gap:3px"><span style="width:10px;height:14px;background:#f0fff8;display:inline-block"></span>Correct</span>'
     +'</div>';
 
   var panel='<div class="card" id="sync-panel">'
@@ -694,15 +758,19 @@ function renderSyncPanel(exactLevel){
     +'<button class="btn xs" style="background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.3)" onclick="closeRegResults()">&#10005; Close</button>'
     +'</div>'
     +'<div class="card-body">'
-    +'<div class="al ai" style="margin-bottom:10px;font-size:12px">&#8505; Registry source: <strong>'+src+'</strong>. '
-    +(semMoveCount?'<strong style="color:#6B21A8">'+semMoveCount+' course(s) are in a different semester</strong> — tick the <strong>Move</strong> checkbox to relocate them. ':'')
-    +'Tick rows to apply registry version, then click <strong>Apply Selected</strong>.</div>'
+    +crossBanner
+    +'<div class="al ai" style="margin-bottom:10px;font-size:12px">&#8505; Source: <strong>'+src+'</strong>. '
+    +(semMoveCount?'<strong style="color:#6B21A8">'+semMoveCount+' placement issue(s)</strong>. ':'')
+    +'Tick rows then click <strong>Apply Selected</strong>.</div>'
     +legend
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'
     +'<button class="btn sm" style="background:#065f46;color:#fff" onclick="applySync()">&#10003; Apply Selected</button>'
     +'<button class="btn bo sm" onclick="selectAllSync(true)">&#9745; Select All</button>'
     +'<button class="btn bo sm" onclick="selectAllSync(false)">&#9633; Deselect All</button>'
-    +'<span style="margin-left:auto;font-size:11px;color:var(--g500)">'+conflictCount+' conflicts | '+semMoveCount+' placement issues | '+matchCount+' total matches | '+keepCount+' new</span>'
+    +'<span style="margin-left:auto;font-size:11px;color:var(--g500)">'
+    +(crossLevelCount?'<strong style="color:#dc2626">'+crossLevelCount+' level mismatch(es)</strong> | ':'')
+    +conflictCount+' conflicts | '+semMoveCount+' placement | '+matchCount+' matches | '+keepCount+' new'
+    +'</span>'
     +'</div>'
     +html
     +'<div style="display:flex;gap:6px;margin-top:12px">'
@@ -725,15 +793,11 @@ function toggleChoice(courseId,checked,regEntry){
 }
 function toggleMove(courseId,checked,year,sem){
   if(!_syncChoices[courseId]){
-    // Auto-check the parent checkbox too
-    var chk=document.getElementById('chk_'+courseId);
-    if(chk){chk.checked=true;}
+    var chk=document.getElementById('chk_'+courseId);if(chk)chk.checked=true;
     var c=courses.find(function(x){return x.id===courseId;});
     if(c){var m=bestMatch(c);if(m)_syncChoices[courseId]={entry:m.entry,moveTo:null};}
   }
-  if(_syncChoices[courseId]){
-    _syncChoices[courseId].moveTo=checked?{year:parseInt(year),sem:String(sem)}:null;
-  }
+  if(_syncChoices[courseId])_syncChoices[courseId].moveTo=checked?{year:parseInt(year),sem:String(sem)}:null;
 }
 function selectAllSync(on){
   document.querySelectorAll('[data-cid]').forEach(function(chk){
@@ -742,7 +806,6 @@ function selectAllSync(on){
     else _syncChoices[id]=null;
   });
 }
-
 async function applySync(){
   var applied=0,moved=0,contentLoaded=0;
   courses.forEach(function(course){
@@ -755,11 +818,7 @@ async function applySync(){
     if(reg.AH>0)course.AH=reg.AH;
     if(reg.OH>0)course.OH=reg.OH;
     if(reg.tier)course.tier=reg.tier;
-    if(choice.moveTo){
-      course.year=parseInt(choice.moveTo.year)||course.year;
-      course.sem=String(choice.moveTo.sem||'1');
-      moved++;
-    }
+    if(choice.moveTo){course.year=parseInt(choice.moveTo.year)||course.year;course.sem=String(choice.moveTo.sem||'1');moved++;}
     applied++;
   });
   if(!applied){toast('No courses selected','i');return;}
@@ -773,10 +832,8 @@ async function applySync(){
   }
   renderCurriculum();renderGenTab();
   var rr=document.getElementById('reg-results');
-  if(rr)rr.innerHTML='<div class="al as"><strong>&#10004; Done!</strong> '
-    +applied+' course(s) corrected.'
-    +(moved?' '+moved+' moved to correct semester.':'')
-    +(contentLoaded?' '+contentLoaded+' content(s) loaded.':'')
+  if(rr)rr.innerHTML='<div class="al as"><strong>&#10004; Done!</strong> '+applied+' corrected.'
+    +(moved?' '+moved+' moved to correct semester.':'')+(contentLoaded?' '+contentLoaded+' content(s) loaded.':'')
     +'&nbsp;<button class="btn bt xs" onclick="closeRegResults()">Close</button></div>';
   toast(applied+' corrected'+(moved?', '+moved+' moved':'')+(contentLoaded?', '+contentLoaded+' loaded':''),'s');
 }

@@ -1189,14 +1189,34 @@ function renderPreview(){
 
 <script>
 /* AI GENERATION */
-async function callAPI(prompt,sys,maxT){maxT=maxT||2000;var r=await fetch(API+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt,system:sys,maxTokens:maxT})});if(!r.ok){var e=await r.text();throw new Error('API '+r.status+': '+e.slice(0,200));}var d=await r.json();return d.content||d.text||'';}
-var SYS='You are a senior curriculum developer for Kampala International University (KIU), Uganda. Write formal, professional academic programme documents following KIU CBE framework and NCHE Uganda standards. Write in paragraphs. Be specific and substantive.';
+
+/* ── UCC SHARED STORAGE (cross-programme fixed course content) ── */
+var UCC_SK='kiu_ucc_content_v1';
+var UCC_SHARED_KEYS=['ICF','ELS','CS','RM']; // the 4 fixed UCCs to share
+function getUCCShared(){try{return JSON.parse(localStorage.getItem(UCC_SK)||'{}');}catch(e){return{};}}
+function setUCCShared(key,data){try{var s=getUCCShared();s[key]=data;localStorage.setItem(UCC_SK,JSON.stringify(s));}catch(e){}}
+
+async function callAPI(prompt,sys,maxT){
+  maxT=maxT||2000;
+  var r=await fetch(API+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({prompt:prompt,system:sys,maxTokens:maxT})});
+  if(!r.ok){var e=await r.text();throw new Error('API '+r.status+': '+e.slice(0,200));}
+  var d=await r.json();return d.content||d.text||'';
+}
+var SYS='You are a senior curriculum developer for Kampala International University (KIU), Uganda. '
+  +'Write formal, professional academic programme documents following KIU CBE framework and NCHE Uganda standards. '
+  +'Be specific, substantive and detailed. Write in well-structured paragraphs. Do NOT use markdown headers with #. '
+  +'Use bold text with ** only for section labels. Produce complete content for every section requested.';
 function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
 
 function progCtx(){
   var p=getProg();assignCodes();var groups=groupBySem();
-  var cl=groups.map(function(g){return getSL(g.year,g.sem)+':'+g.courses.map(function(c){return' - '+c.code+': '+c.name+' ('+getNH(c)+' NH, '+getCr(c)+' Cr'+(c.elective?' [E]':'')+')';}).join('');}).join('\n');
-  return'INSTITUTION: Kampala International University (KIU), Uganda\nPROGRAMME: '+p.name+'\nAWARD: '+p.award+'\nSCHOOL: '+p.school+'\nDEPT: '+p.dept+'\nUHEQF LEVEL: Level '+p.level+'\nDURATION: '+p.years+' years, '+p.mode+'\n\nCURRICULUM:\n'+cl;
+  var cl=groups.map(function(g){return getSL(g.year,g.sem)+':'+g.courses.map(function(c){
+    return' - '+c.code+': '+c.name+' ('+getNH(c)+' NH, '+getCr(c)+' Cr'+(c.elective?' [E]':'')+')';}).join('');}).join('\n');
+  return'INSTITUTION: Kampala International University (KIU), Uganda\nPROGRAMME: '+p.name
+    +'\nAWARD: '+p.award+'\nSCHOOL: '+p.school+'\nDEPT: '+p.dept
+    +'\nUHEQF LEVEL: Level '+p.level+'\nDURATION: '+p.years+' years, '+p.mode
+    +'\n\nCURRICULUM:\n'+cl;
 }
 
 function secPrompt(key){
@@ -1209,9 +1229,9 @@ function secPrompt(key){
     development:'Write Section 5: Programme Development/Review Process. Cover: needs assessment, stakeholder consultation, benchmarking with regional universities, institutional approval process (Dept->School Board->Senate->Council). 250 words.\n\n'+ctx,
     rationale:'Write Section 6: Programme Rationale and Justification. Justify the need: Uganda Vision 2040, National Development Plan III alignment, industry skills gap, regional demand, NCHE mandate. 350 words.\n\n'+ctx,
     competences:'Write Section 7: Programme Competences. List 4 competence categories with 5-6 competences each: Knowledge Competences, Practical/Technical Competences, Cognitive/Analytical Competences, Affective/Professional Competences. One clear sentence per competence.\n\n'+ctx,
-    outcomes:'Write Section 8: Programme Learning Outcomes. List 10-12 specific measurable PLOs using Bloom&#39;s verbs. Format: "Upon successful completion, the graduate will be able to: then numbered list.\n\n'+ctx,
+    outcomes:'Write Section 8: Programme Learning Outcomes. List 10-12 specific measurable PLOs using Bloom\'s verbs. Format: "Upon successful completion, the graduate will be able to:" then numbered list.\n\n'+ctx,
     targetGroup:'Write Section 9: Target Group. Describe intended learners, geographic scope Uganda and East Africa, career aspirations, professional background. 200 words.\n\n'+ctx,
-    admission:'Write Section 10: Entry/Admission Requirements based on: '+p.admission+'. Format clearly with route labels.\n\n'+ctx,
+    admission:'Write Section 10: Entry/Admission Requirements based on: '+($('p-admission',''))+'. Format clearly with route labels.\n\n'+ctx,
     humanRes:'Write Section 11: Human Resources. Staff qualifications (PhD requirement), student-staff ratios, CPD policy, laboratory technicians, visiting faculty, administrative support. 300 words.\n\n'+ctx,
     infrastructure:'Write Section 12: Physical Infrastructure and Learning Resources. Teaching spaces, laboratories and equipment, library resources, ICT infrastructure, safety equipment, e-learning platforms. 250 words.\n\n'+ctx,
     delivery:'Write Section 13: Modes/Strategies of Delivery. CBE delivery methods: lectures, laboratory practicals, problem-based learning, industrial training, tutorials, field trips, blended learning, self-directed learning. 250 words.\n\n'+ctx,
@@ -1227,43 +1247,276 @@ function secPrompt(key){
   return m[key]||('Write the section "'+key+'" for KIU programme: '+p.name+'.\n\n'+ctx);
 }
 
-function coursePrompt(c){var p=getProg(),uk=getUK(c),nh=getNH(c),cr=getCr(c),wks=Math.max(6,Math.min(15,Math.round((c.DH||0)/3)||12));return'Generate a complete CBE Course Unit for:\nCOURSE: '+sm(c.name)+'\nCODE: '+(c.code||'')+' | '+getSL(c.year,c.sem)+'\nNH: '+nh+' (DH:'+c.DH+' SH:'+c.SH+' AH:'+c.AH+' OH:'+c.OH+') | Credits: '+(uk==='WRC'?'5 (NCHE)':String(cr))+'\nPROGRAMME: '+sm(p.name)+' (UHEQF Level '+p.level+')\nSCHOOL: '+sm(p.school)+' | DEPT: '+sm(p.dept)+'\n\nWrite in this structure:\n1. Course Justification and Aims (paragraph)\n2. Learning Outcomes: Cognitive (5), Affective (3), Psychomotor (3)\n3. SMART Objectives (5-6)\n4. Course Content: '+wks+'-week topic plan with weekly topics\n5. Assessment Strategy: Formative 50% (CATs, practicals, assignments), Summative 50% (written exam)\n6. Delivery Methods (table: Activity, Hours, NH)\n7. Core Reading List (APA 7th ed, 5 sources, 2018-2025)\n8. Supplementary Resources (3 sources)';}
+/* COMPLETE 15-ACTION COURSE UNIT PROMPT */
+function coursePrompt(c){
+  var p=getProg(),uk=getUK(c),nh=getNH(c),cr=getCr(c);
+  var dh=c.DH||0,sh=c.SH||0,ah=c.AH||0,oh=c.OH||0;
+  var wks=Math.max(8,Math.min(15,Math.round(dh/3)||12));
+  var totalH=nh;
+  var semLabel=getSL(c.year,c.sem);
+  var crLabel=uk==='WRC'?'5 (NCHE)':String(cr);
 
-function updateProgress(){var tot=SECTIONS.length+courses.length,dn=SECTIONS.filter(function(s){return SC[s.key]&&SC[s.key].done;}).length+courses.filter(function(c){return CD[c.code]&&CD[c.code].done;}).length,pct=Math.round(dn/tot*100);var pg=document.getElementById('oprog');if(pg)pg.style.width=pct+'%';var pt=document.getElementById('ptxt');if(pt)pt.textContent=dn+' of '+tot+' items generated ('+pct+'%)';}
+  return 'Generate a COMPLETE and DETAILED CBE Course Unit document for Kampala International University (KIU) Uganda. '
+    +'Follow ALL 15 Actions EXACTLY as specified below. Every Action must be fully written out — do not abbreviate, skip or summarise any Action.\n\n'
+    +'COURSE DETAILS:\n'
+    +'Course Name: '+c.name+'\n'
+    +'Course Code: '+(c.code||'')+'\n'
+    +'Year / Semester: '+semLabel+'\n'
+    +'Notional Hours: '+nh+' NH | DH:'+dh+' SH:'+sh+' AH:'+ah+' OH:'+oh+'\n'
+    +'Credits: '+crLabel+'\n'
+    +'Programme: '+p.name+' (UHEQF Level '+p.level+')\n'
+    +'School: '+p.school+'\n'
+    +'Department: '+p.dept+'\n'
+    +'Weeks: '+wks+'\n\n'
+    +'---\n\n'
+
+    +'Action 1: Course Justification and Aims\n'
+    +'Write 2 detailed paragraphs justifying this course in the context of Uganda, East Africa, and KIU\'s CBE framework. '
+    +'Then write Course Aims as 4 bullet points starting "Upon completing this course, students will be able to:". '
+    +'Then write a Course Description paragraph of 150 words covering scope, CBE alignment and industry relevance.\n\n'
+
+    +'Action 2: Cognitive Domain Outcomes\n'
+    +'List 6 specific cognitive outcomes using Bloom\'s verbs (Apply, Analyse, Evaluate, Create, etc.). '
+    +'Then write: **Bloom Verbs Used**: [list]. **Bloom Levels Addressed**: [list all 6 levels]. '
+    +'**Assessment Linkage**: one sentence.\n\n'
+
+    +'Action 3: Affective Domain Outcomes\n'
+    +'List 4 affective outcomes. Then write: **Values and Dispositions**: [list]. '
+    +'**Strategies**: [list]. **Evidence and Measurement**: one sentence.\n\n'
+
+    +'Action 4: Psychomotor Domain Outcomes\n'
+    +'List 4 psychomotor/practical outcomes. Then write: **Practical Activities**: [list]. '
+    +'**Practical Assessment**: [list]. **Equipment and Materials**: [list].\n\n'
+
+    +'Action 5: Competency Gap Analysis\n'
+    +'Write: **Current State**: [what students lack]. **Desired State**: [what they will achieve]. '
+    +'**Identified Gaps**: [specific gaps, 3-4 items]. **Priority Level**: High.\n\n'
+
+    +'Action 6: Knowledge, Skills and Competency Mapping\n'
+    +'List 5-6 **Core Competencies**. Then: **Knowledge Areas**: [list]. **Skills**: [list]. '
+    +'**Mapping Notes**: one sentence linking competencies to outcomes.\n\n'
+
+    +'Action 7: SMART Learning Objectives\n'
+    +'Write "Learners will be able to:" then list 6 SMART objectives, each ending with "by the end of Week [N]" '
+    +'distributed across the '+wks+'-week course.\n\n'
+
+    +'Action 8: Course Content, Notional Hours and Engagement Activities\n'
+    +'Write a **Course Content Overview** paragraph. Then produce a **Topic-by-Topic Content Plan** as a markdown table '
+    +'with these exact columns: Week | Topic/Subtopic | Key Content | Bloom Level | A hrs Directed | B hrs Self-dir | C hrs Applied | D hrs Assessed | Total h | Teaching Method | Learner Activity | Assessment Type | Resources Required | Performance Indicator | Competency Link\n'
+    +'Generate '+wks+' data rows (one per week), then a TOTALS row summing DH='+dh+', SH='+sh+', AH='+ah+', OH='+oh+', Total='+nh+'. '
+    +'After the table write: **Rationale for Sequencing**: [paragraph]. **CBE Blend Verification**: [calculate C+D hours / total NH as percentage].\n\n'
+
+    +'Action 9: Evidence-based Assessments\n'
+    +'Write **Formative Assessments (50%)** with 4 specific assessment tasks, each with week, weight and description. '
+    +'**Summative Assessments (50%)**: mid-semester test (20%) and end-of-semester examination (30%). '
+    +'Then: **Rubric**: [paragraph]. **Evidence Types**: [list]. **Mastery Criteria**: 50% pass mark. '
+    +'**Competency-Assessment Matrix**: one sentence.\n\n'
+
+    +'Action 10: Delivery Methods\n'
+    +'Write: **Modality**: [face-to-face/blended/online]. **Tools**: [list KIU tools e.g. Moodle, Zoom]. '
+    +'**Formats**: [list]. **Accessibility**: one sentence on inclusive design.\n\n'
+
+    +'Action 11: Engaging Learning Activities\n'
+    +'List 5 **Core Activities** with descriptions. Then: **Collaborative Elements**: [list]. '
+    +'**Gamification**: [sentence]. **Real-world Scenarios**: [sentence].\n\n'
+
+    +'Action 12: Flexible Learning Paths\n'
+    +'Write: **Prerequisites**: [list or None]. **Within-Course Progression**: [sentence]. '
+    +'**Self-paced Mechanism**: [sentence]. **Adaptations**: [sentence for students with disabilities]. '
+    +'**RPL Provision**: one sentence.\n\n'
+
+    +'Action 13: Instructional Strategies and Resource Materials\n'
+    +'Produce a **Strategy-Purpose-Resource Matrix** markdown table with columns: Strategy | Purpose | Resource. '
+    +'Include 5 rows. Then: **Resource Materials**: [list]. **Design Notes**: [sentence]. '
+    +'**Localised References (APA 7th, 2018-2025)**: list 6 references.\n\n'
+
+    +'Action 14: Continuous Feedback and Improvement\n'
+    +'Write: **Mechanisms**: list 4 feedback mechanisms. **Schedule**: [sentence]. '
+    +'**Improvement Process**: [sentence]. **Success Metrics**: [3 items].\n\n'
+
+    +'Action 15: Assessment Weights and Credit Structure\n'
+    +'Write **Assessment Weight Distribution**: Formative 50% (detail sub-items) and Summative 50% (detail sub-items). '
+    +'**Competence-Assessment Matrix**: sentence. '
+    +'**KIU Grading Scale**: A=80-100, B+=75-79, B=70-74, C+=65-69, C=60-64, D+=55-59, F<55. '
+    +'**Authentic Assessments** (3 real-world tasks): list. '
+    +'**Reading List (APA 7th, 8-10 refs, 2018-2025)**: list 8-10 real academic references '
+    +'including at least 2 East African or Uganda-specific sources.\n\n'
+    +'---\nEND. Ensure every Action above is fully written. Total length should be comprehensive and detailed.';
+}
+
+function updateProgress(){
+  var tot=SECTIONS.length+courses.length;
+  var dn=SECTIONS.filter(function(s){return SC[s.key]&&SC[s.key].done;}).length
+    +courses.filter(function(c){return CD[c.code]&&CD[c.code].done;}).length;
+  var pct=Math.round(dn/tot*100);
+  var pg=document.getElementById('oprog');if(pg)pg.style.width=pct+'%';
+  var pt=document.getElementById('ptxt');if(pt)pt.textContent=dn+' of '+tot+' items generated ('+pct+'%)';
+}
 
 function renderGenTab(){
-  var wb=document.getElementById('wrc-badges');if(wb&&UCC.WRC&&UCC.WRC.units)wb.innerHTML=UCC.WRC.units.map(function(u){return'<span class="badge-teal" style="font-size:10px">'+esc(u.code)+': '+esc(u.name)+' ('+u.h+'h)</span>';}).join(' ');
+  var wb=document.getElementById('wrc-badges');
+  if(wb&&UCC.WRC&&UCC.WRC.units)wb.innerHTML=UCC.WRC.units.map(function(u){
+    return'<span class="badge-teal" style="font-size:10px">'+esc(u.code)+': '+esc(u.name)+' ('+u.h+'h)</span>';}).join(' ');
   assignCodes();
-  var sh='';SECTIONS.forEach(function(s){var st=SC[s.key]||{done:false};sh+='<div class="si2 '+(st.done?'done':'')+'" id="si-'+s.key+'"><div class="sd '+(st.done?'d':'p')+'" id="sd-'+s.key+'">'+(st.done?'\u2713':'\u25cb')+'</div><div class="sn">'+s.num+' '+s.title+'</div><button class="btn sm '+(st.done?'bo':'bt')+'" onclick="genSection(\''+s.key+'\',false)" id="sb-'+s.key+'">'+(st.done?'\u21ba Redo':'Generate')+'</button></div>';});
+  var sh='';
+  SECTIONS.forEach(function(s){
+    var st=SC[s.key]||{done:false};
+    sh+='<div class="si2 '+(st.done?'done':'')+'" id="si-'+s.key+'">'
+      +'<div class="sd '+(st.done?'d':'p')+'" id="sd-'+s.key+'">'+(st.done?'\u2713':'\u25cb')+'</div>'
+      +'<div class="sn">'+s.num+' '+s.title+'</div>'
+      +'<button class="btn sm '+(st.done?'bo':'bt')+'" onclick="genSection(\''+s.key+'\',false)" id="sb-'+s.key+'">'
+      +(st.done?'\u21ba Redo':'Generate')+'</button></div>';
+  });
   document.getElementById('sec-list').innerHTML=sh;
-  var ch='';courses.forEach(function(c){var det=CD[c.code]||{},dn=!!det.done;ch+='<div class="si2 '+(dn?'done':'')+'" id="ci-'+c.id+'"><div class="sd '+(dn?'d':'p')+'" id="cd-'+c.id+'">'+(dn?'\u2713':'\u25cb')+'</div><div class="sn" style="font-size:12px"><span class="cd" style="font-size:10px">'+esc(c.code)+'</span> '+esc(c.name)+(isUCC(c)?'<span style="font-size:9px;color:var(--tl);margin-left:4px">[UCC]</span>':'')+'</div><button class="btn sm '+(dn?'bo':'bt')+'" onclick="genCourse('+c.id+')" id="cb-'+c.id+'">'+(dn?'\u21ba':'Gen')+'</button></div>';});
+
+  /* Course list — show Pull/Done status */
+  var uccShared=getUCCShared();
+  var ch='';
+  courses.forEach(function(c){
+    var det=CD[c.code]||{};
+    var uk=getUK(c);
+    var sharedKey=uk&&UCC_SHARED_KEYS.indexOf(uk)>=0?uk:null;
+    var hasShared=sharedKey&&uccShared[sharedKey]&&uccShared[sharedKey].done;
+    var isDone=!!det.done||hasShared;
+    var isPulled=!det.done&&hasShared;
+    var statusLabel=isPulled?'\u2193 Pull Shared':isDone?'\u21ba Redo':'Gen';
+    var statusClass=isDone?'bo':'bt';
+    ch+='<div class="si2 '+(isDone?'done':'')+'" id="ci-'+c.id+'">'
+      +'<div class="sd '+(isDone?'d':'p')+'" id="cd-'+c.id+'">'+(isDone?'\u2713':'\u25cb')+'</div>'
+      +'<div class="sn" style="font-size:12px"><span class="cd" style="font-size:10px">'+esc(c.code)+'</span> '+esc(c.name)
+      +(isUCC(c)?'<span style="font-size:9px;color:var(--tl);margin-left:4px">[UCC]</span>':'')
+      +(isPulled?'<span style="font-size:9px;color:#065f46;margin-left:4px;font-weight:700">SHARED \u2713</span>':'')
+      +'</div>'
+      +'<button class="btn sm '+statusClass+'" onclick="genCourse('+c.id+')" id="cb-'+c.id+'">'+statusLabel+'</button>'
+      +'</div>';
+  });
   document.getElementById('crs-list').innerHTML=ch;
   updateProgress();
 }
 
 async function genSection(key,silent){
   var btn=document.getElementById('sb-'+key),dot=document.getElementById('sd-'+key),item=document.getElementById('si-'+key);
-  if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span>';}if(dot){dot.className='sd r';dot.textContent='\u27f3';}if(item)item.className='si2 run';
+  if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span>';}
+  if(dot){dot.className='sd r';dot.textContent='\u27f3';}if(item)item.className='si2 run';
   var sec=SECTIONS.find(function(s){return s.key===key;}),cur=document.getElementById('gen-cur'),curT=document.getElementById('gen-cur-txt');
   if(cur)cur.style.display='flex';if(curT&&sec)curT.textContent='Generating: '+sec.title+'...';
-  try{var text=await callAPI(secPrompt(key),SYS,2000);SC[key]={text:text,done:true};if(btn){btn.disabled=false;btn.innerHTML='\u21ba Redo';}if(dot){dot.className='sd d';dot.textContent='\u2713';}if(item)item.className='si2 done';if(!genAll&&!silent){if(cur)cur.style.display='none';toast((sec?sec.title:key)+' generated!','s');}
-  }catch(e){if(btn){btn.disabled=false;btn.innerHTML='Generate';}if(dot){dot.className='sd p';dot.textContent='\u25cb';}if(item)item.className='si2';if(!genAll&&!silent){if(cur)cur.style.display='none';toast('Error: '+e.message,'e');}}
+  try{
+    var text=await callAPI(secPrompt(key),SYS,2000);
+    SC[key]={text:text,done:true};
+    if(btn){btn.disabled=false;btn.innerHTML='\u21ba Redo';}
+    if(dot){dot.className='sd d';dot.textContent='\u2713';}if(item)item.className='si2 done';
+    if(!genAll&&!silent){if(cur)cur.style.display='none';toast((sec?sec.title:key)+' generated!','s');}
+  }catch(e){
+    if(btn){btn.disabled=false;btn.innerHTML='Generate';}
+    if(dot){dot.className='sd p';dot.textContent='\u25cb';}if(item)item.className='si2';
+    if(!genAll&&!silent){if(cur)cur.style.display='none';toast('Error: '+e.message,'e');}
+  }
   updateProgress();
 }
+
 async function genCourse(courseId){
   var c=courses.find(function(x){return x.id===courseId;});if(!c)return;
   var btn=document.getElementById('cb-'+courseId),dot=document.getElementById('cd-'+courseId),item=document.getElementById('ci-'+courseId);
-  if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span>';}if(dot){dot.className='sd r';dot.textContent='\u27f3';}if(item)item.className='si2 run';
-  var cur=document.getElementById('gen-cur');if(cur)cur.style.display='flex';
-  var curT=document.getElementById('gen-cur-txt');if(curT)curT.textContent='Generating course: '+c.name+'...';
-  try{var text=await callAPI(coursePrompt(c),SYS,4000);CD[c.code]={text:text,done:true};fetch(API+'/api/course-detail',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:c.code,name:c.name,programme:getProg().name,text:text})}).catch(function(){});if(btn){btn.disabled=false;btn.innerHTML='\u21ba';}if(dot){dot.className='sd d';dot.textContent='\u2713';}if(item)item.className='si2 done';if(!genAll){if(cur)cur.style.display='none';toast(c.code+' generated!','s');}
-  }catch(e){if(btn){btn.disabled=false;btn.innerHTML='Gen';}if(dot){dot.className='sd p';dot.textContent='\u25cb';}if(item)item.className='si2';if(!genAll){if(cur)cur.style.display='none';toast('Error: '+e.message,'e');}}
+  var uk=getUK(c);
+  var sharedKey=uk&&UCC_SHARED_KEYS.indexOf(uk)>=0?uk:null;
+  var uccShared=getUCCShared();
+
+  /* 1. If already generated for THIS programme — just confirm, don't regenerate */
+  if(CD[c.code]&&CD[c.code].done&&btn&&btn.textContent.trim()!=='\u21ba Redo'){
+    toast(c.code+' already generated \u2713','s');
+    return;
+  }
+
+  /* 2. Pull from shared UCC store if available */
+  if(sharedKey&&uccShared[sharedKey]&&uccShared[sharedKey].done){
+    CD[c.code]={text:uccShared[sharedKey].text,done:true,pulledFrom:'shared'};
+    if(btn){btn.innerHTML='\u21ba Redo';}
+    if(dot){dot.className='sd d';dot.textContent='\u2713';}if(item)item.className='si2 done';
+    updateProgress();
+    if(!genAll)toast(c.name+' — pulled from shared UCC library \u2193','s');
+    return;
+  }
+
+  /* 3. Pull from server registry if available */
+  if(c.code){
+    try{
+      var sr=await fetch(API+'/api/course-detail/'+encodeURIComponent(c.code),{signal:AbortSignal.timeout(5000)});
+      if(sr.ok){var sd=await sr.json();
+        if(sd&&sd.text&&sd.text.length>200){
+          CD[c.code]={text:sd.text,done:true,pulledFrom:'registry'};
+          if(sharedKey)setUCCShared(sharedKey,{text:sd.text,done:true});
+          if(btn)btn.innerHTML='\u21ba Redo';
+          if(dot){dot.className='sd d';dot.textContent='\u2713';}if(item)item.className='si2 done';
+          updateProgress();
+          if(!genAll)toast(c.code+' — pulled from registry \u2193','s');
+          return;
+        }
+      }
+    }catch(e){}
+  }
+
+  /* 4. Generate fresh using 15-Action prompt */
+  if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span>';}
+  if(dot){dot.className='sd r';dot.textContent='\u27f3';}if(item)item.className='si2 run';
+  var cur=document.getElementById('gen-cur'),curT=document.getElementById('gen-cur-txt');
+  if(cur)cur.style.display='flex';if(curT)curT.textContent='Generating (15 Actions): '+c.name+'...';
+  try{
+    var text=await callAPI(coursePrompt(c),SYS,8000);
+    CD[c.code]={text:text,done:true};
+    /* Save to shared store for UCC courses */
+    if(sharedKey)setUCCShared(sharedKey,{text:text,done:true});
+    /* Push to server */
+    fetch(API+'/api/course-detail',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code:c.code,name:c.name,programme:getProg().name,text:text})}).catch(function(){});
+    if(btn){btn.disabled=false;btn.innerHTML='\u21ba Redo';}
+    if(dot){dot.className='sd d';dot.textContent='\u2713';}if(item)item.className='si2 done';
+    if(!genAll){if(cur)cur.style.display='none';toast(c.code+' generated!','s');}
+  }catch(e){
+    if(btn){btn.disabled=false;btn.innerHTML='Gen';}
+    if(dot){dot.className='sd p';dot.textContent='\u25cb';}if(item)item.className='si2';
+    if(!genAll){if(cur)cur.style.display='none';toast('Error: '+e.message,'e');}
+  }
   updateProgress();
 }
-async function generateAll(){genAll=true;var btn=document.getElementById('gen-all-btn'),sp=document.getElementById('gas');btn.disabled=true;sp.style.display='inline-block';var cur=document.getElementById('gen-cur');cur.style.display='flex';for(var i=0;i<SECTIONS.length;i++){if(!SC[SECTIONS[i].key]||!SC[SECTIONS[i].key].done){await genSection(SECTIONS[i].key,true);await sleep(400);}}genAll=false;btn.disabled=false;sp.style.display='none';cur.style.display='none';toast('All programme sections generated!','s');}
-async function generateAllCourses(){genAll=true;var btns=document.querySelectorAll('[onclick="generateAllCourses()"]'),sp=document.getElementById('gcs');btns.forEach(function(b){b.disabled=true;});sp.style.display='inline-block';var cur=document.getElementById('gen-cur');cur.style.display='flex';for(var i=0;i<courses.length;i++){if(!CD[courses[i].code]||!CD[courses[i].code].done){await genCourse(courses[i].id);await sleep(400);}}genAll=false;btns.forEach(function(b){b.disabled=false;});sp.style.display='none';cur.style.display='none';toast('All course details generated!','s');}
-function clearAll(){if(!confirm('Clear all generated content?'))return;SECTIONS.forEach(function(s){SC[s.key]={text:'',done:false};});CD={};renderGenTab();toast('All content cleared','i');}
+
+async function generateAll(){
+  genAll=true;
+  var btn=document.getElementById('gen-all-btn'),sp=document.getElementById('gas');
+  btn.disabled=true;sp.style.display='inline-block';
+  var cur=document.getElementById('gen-cur');cur.style.display='flex';
+  for(var i=0;i<SECTIONS.length;i++){
+    if(!SC[SECTIONS[i].key]||!SC[SECTIONS[i].key].done){await genSection(SECTIONS[i].key,true);await sleep(400);}
+  }
+  genAll=false;btn.disabled=false;sp.style.display='none';cur.style.display='none';
+  toast('All programme sections generated!','s');
+}
+async function generateAllCourses(){
+  genAll=true;
+  var sp=document.getElementById('gcs');sp.style.display='inline-block';
+  var cur=document.getElementById('gen-cur');cur.style.display='flex';
+  for(var i=0;i<courses.length;i++){
+    /* Skip if already done */
+    var co=courses[i];
+    var uk2=getUK(co),sk2=uk2&&UCC_SHARED_KEYS.indexOf(uk2)>=0?uk2:null;
+    var alreadyDone=(CD[co.code]&&CD[co.code].done)||(sk2&&getUCCShared()[sk2]&&getUCCShared()[sk2].done);
+    if(!alreadyDone){await genCourse(co.id);await sleep(500);}
+    else{
+      /* Mark done in UI */
+      if(sk2&&getUCCShared()[sk2]){CD[co.code]={text:getUCCShared()[sk2].text,done:true,pulledFrom:'shared'};}
+      var dot=document.getElementById('cd-'+co.id),item=document.getElementById('ci-'+co.id);
+      if(dot){dot.className='sd d';dot.textContent='\u2713';}if(item)item.className='si2 done';
+    }
+  }
+  genAll=false;sp.style.display='none';cur.style.display='none';
+  updateProgress();toast('All course units complete!','s');
+}
+function clearAll(){
+  if(!confirm('Clear all generated content?'))return;
+  SECTIONS.forEach(function(s){SC[s.key]={text:'',done:false};});CD={};
+  renderGenTab();toast('All content cleared','i');
+}
 </script>
+
 
 <script>
 /* AUTO-POPULATE FIX (#1) - Robust extraction with clear step-by-step feedback */

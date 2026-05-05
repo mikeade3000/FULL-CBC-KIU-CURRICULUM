@@ -202,6 +202,7 @@ body{font-family:var(--ff);background:var(--g50);color:var(--g700);font-size:14p
     <button class="btn bo sm" onclick="refreshCodes()">&#8634; Codes</button>
     <div class="sep"></div>
     <button class="btn sm" style="background:#6B21A8;color:#fff" onclick="checkAllCourseRegistry()"><span id="reg-sp" style="display:none" class="spin"></span> &#128269; Check Registry</button>
+    <button class="btn sm" style="background:#065f46;color:#fff" onclick="syncWithRegistry(false)"><span id="sync-sp" style="display:none" class="spin"></span> &#9654; Sync &amp; Fix Registry</button>
     <div class="sep"></div>
     <span id="tot-sum" style="font-size:12px;font-family:var(--fm);color:var(--g500)">Loading...</span>
     <div style="margin-left:auto;font-size:12px;color:var(--g500)">Target: <strong>600 NH = 60 Credits</strong></div>
@@ -453,6 +454,134 @@ SECTIONS.forEach(function(s){SC[s.key]={text:'',done:false};});
 var genAll=false;
 </script>
 
+
+<script>
+/* NAME SIMILARITY HELPER */
+function nameSimilarity(a,b){
+  a=(a||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+  b=(b||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+  if(!a||!b)return 0;
+  if(a===b)return 1;
+  // Bigram similarity
+  function bigrams(s){var bg=new Set();for(var i=0;i<s.length-1;i++)bg.add(s[i]+s[i+1]);return bg;}
+  var ba=bigrams(a),bb=bigrams(b),inter=0;
+  ba.forEach(function(g){if(bb.has(g))inter++;});
+  return(2*inter)/(ba.size+bb.size);
+}
+
+function stripPfx(name){
+  // Remove common prefix acronyms from course names for better matching
+  return(name||'').replace(/^(introduction to |fundamentals of |basic |applied |advanced )/i,'').trim();
+}
+
+/* SYNC COURSES WITH REGISTRY (FIX DUPLICATES) */
+async function syncWithRegistry(silent){
+  var sp=document.getElementById('sync-sp'),rr=document.getElementById('reg-results');
+  if(sp)sp.style.display='inline-block';
+  if(!silent){if(rr){rr.style.display='block';rr.innerHTML='<div class="card"><div class="card-hd" style="background:#065f46">&#9654; Syncing with KIU Registry...</div><div class="card-body"><span class="spin spin-dk"></span> Checking all courses against registry...</div></div>';}}
+  var p=getProg();
+  /* Fetch full registry */
+  var registry=[];
+  try{
+    var resp=await fetch(API+'/api/registry',{signal:AbortSignal.timeout(12000)});
+    if(resp.ok){var d=await resp.json();registry=d.courses||d||[];}
+  }catch(e){
+    /* Offline: use UCC registry as fallback */
+    registry=UCC_ORD.map(function(k){var u=UCC[k];return{code:k,name:u.name,DH:u.DH,SH:u.SH,AH:u.AH,OH:u.OH,year:u.year,sem:u.sem,prefix:u.prefix};});
+  }
+  var changed=[],notFound=[],alreadyOk=[];
+  var THRESHOLD=0.72;
+  /* For each programme-specific course find best registry match */
+  courses.forEach(function(c){
+    if(isUCC(c))return; // UCCs are already locked
+    /* Try exact name match first, then similarity */
+    var best=null,bestScore=0;
+    registry.forEach(function(r){
+      if(!r.name)return;
+      var s1=nameSimilarity(c.name,r.name);
+      var s2=nameSimilarity(stripPfx(c.name),stripPfx(r.name));
+      var score=Math.max(s1,s2);
+      if(score>bestScore){bestScore=score;best=r;}
+    });
+    if(best&&bestScore>=THRESHOLD){
+      var prevCode=c.code,prevName=c.name;
+      /* Update course to match registry */
+      var changed_fields=[];
+      if(best.name&&best.name!==c.name){c.name=best.name;changed_fields.push('name');}
+      if(best.prefix&&best.prefix!==c.prefix){c.prefix=best.prefix;changed_fields.push('prefix');}
+      if(best.DH!==undefined&&best.DH!==c.DH){c.DH=best.DH;changed_fields.push('DH');}
+      if(best.SH!==undefined&&best.SH!==c.SH){c.SH=best.SH;changed_fields.push('SH');}
+      if(best.AH!==undefined&&best.AH!==c.AH){c.AH=best.AH;changed_fields.push('AH');}
+      if(best.OH!==undefined&&best.OH!==c.OH){c.OH=best.OH;changed_fields.push('OH');}
+      if(best.year!==undefined&&best.year!==c.year){c.year=best.year;changed_fields.push('year');}
+      if(best.sem!==undefined&&best.sem!==c.sem){c.sem=best.sem;changed_fields.push('sem');}
+      if(best.tier!==undefined)c.tier=best.tier;
+      if(changed_fields.length>0){
+        changed.push({localName:prevName,localCode:prevCode,regName:best.name||prevName,regCode:best.code||'',score:Math.round(bestScore*100),fields:changed_fields,registryCode:best.code});
+      }else{alreadyOk.push(c.name);}
+    }else if(bestScore>0&&bestScore<THRESHOLD){
+      notFound.push({name:c.name,bestMatch:best?best.name:'',score:Math.round(bestScore*100)});
+    }
+  });
+  assignCodes();
+  /* Fetch generated content for matched courses */
+  var contentFetched=0;
+  for(var i=0;i<changed.length;i++){
+    var ch=changed[i];
+    if(!ch.registryCode)continue;
+    try{
+      var cr=await fetch(API+'/api/course-detail/'+encodeURIComponent(ch.registryCode),{signal:AbortSignal.timeout(8000)});
+      if(cr.ok){
+        var cd=await cr.json();
+        if(cd&&cd.text&&cd.text.length>100){
+          /* Find the updated local course */
+          var lc=courses.find(function(x){return x.name===ch.regName;});
+          if(lc&&lc.code){CD[lc.code]={text:cd.text,done:true};contentFetched++;}
+        }
+      }
+    }catch(e){/* content not available */}
+  }
+  /* Re-render */
+  enforceSems();assignCodes();renderCurriculum();
+  if(contentFetched>0)renderGenTab();
+  if(sp)sp.style.display='none';
+  /* Build results panel */
+  if(!silent||changed.length>0){
+    var html='<div class="card"><div class="card-hd" style="background:#065f46">&#9654; Registry Sync Results</div><div class="card-body">';
+    html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">';
+    html+='<div style="background:#d4f0e4;color:#1a7a4a;padding:7px 14px;border-radius:6px;font-weight:700;font-size:13px">&#10004; '+changed.length+' course(s) updated</div>';
+    html+='<div style="background:#fff0f0;color:#c00;padding:7px 14px;border-radius:6px;font-weight:700;font-size:13px">&#9888; '+notFound.length+' no registry match</div>';
+    html+='<div style="background:#e8f4ff;color:#1a3d60;padding:7px 14px;border-radius:6px;font-weight:700;font-size:13px">&#128196; '+alreadyOk.length+' already matched</div>';
+    if(contentFetched>0)html+='<div style="background:#fffbf0;color:#8a6300;padding:7px 14px;border-radius:6px;font-weight:700;font-size:13px">&#128218; '+contentFetched+' course content(s) pulled from registry</div>';
+    html+='</div>';
+    if(changed.length>0){
+      html+='<div style="font-weight:700;color:#065f46;font-size:13px;margin-bottom:8px">Updated courses:</div>';
+      changed.forEach(function(ch){
+        html+='<div style="border:1px solid #d4f0e4;border-radius:5px;padding:7px 12px;margin-bottom:6px;background:#f0fdf7;font-size:12px">';
+        html+='<strong>'+esc(ch.localName)+'</strong> &rarr; <strong style="color:#065f46">'+esc(ch.regName)+'</strong>';
+        html+=' <span style="color:var(--g500)">('+(ch.score)+'% match)</span>';
+        html+='<span style="color:var(--g500);margin-left:8px">Changed: '+ch.fields.join(', ')+'</span>';
+        html+='</div>';
+      });
+    }
+    if(notFound.length>0){
+      html+='<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--g500)">'+notFound.length+' courses not found in registry (new courses - OK to keep)</summary>';
+      html+='<div style="margin-top:6px">';
+      notFound.forEach(function(n){html+='<div style="font-size:11px;color:var(--g500);padding:2px 0">'+esc(n.name)+(n.bestMatch?' (closest: '+esc(n.bestMatch)+' @ '+n.score+'%)':'')+'</div>';});
+      html+='</div></details>';
+    }
+    html+='<button class="btn bo sm" onclick="closeRegResults()" style="margin-top:10px">&#10005; Close</button>';
+    html+='</div></div>';
+    if(rr){rr.innerHTML=html;rr.style.display='block';}
+    if(!silent)toast(changed.length+' courses synced with registry'+(contentFetched>0?', '+contentFetched+' content(s) loaded':''),'s');
+    else if(changed.length>0)toast(changed.length+' courses auto-synced with registry. Review in Curriculum tab.','s');
+  }else{
+    if(rr)rr.style.display='none';
+    if(!silent)toast('All courses already match the registry \u2713','s');
+  }
+}
+</script>
+
 <script>
 /* CORE HELPERS */
 function getProg(){return{name:$('p-name','B.Sc.T. Chemistry'),award:$('p-award',''),abbr:$('p-abbr',''),prefix:$('p-prefix','CHT'),school:$('p-school',''),dept:$('p-dept',''),hod:$('p-hod',''),level:$('p-level','7'),years:parseInt($('p-years','3')),mode:$('p-mode','Full-time'),date:$('p-date','2024'),admission:$('p-admission','')};}
@@ -524,6 +653,7 @@ function addCourseTo(yr,sm){var p=getProg();courses.push({id:nextId++,year:yr,se
 function fixDups(){var sc={},sn={},tr=[];courses.forEach(function(c){if(isUCC(c))return;var ck=(c.code||'').toUpperCase().trim(),nk=(c.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();if(ck&&sc[ck]){if(!tr.includes(c.id))tr.push(c.id);}else if(ck)sc[ck]=true;if(nk.length>3&&sn[nk]){if(!tr.includes(c.id))tr.push(c.id);}else if(nk.length>3)sn[nk]=true;});if(!tr.length){toast('No duplicates found','i');return;}if(!confirm('Remove '+tr.length+' duplicate(s)?'))return;courses=courses.filter(function(c){return!tr.includes(c.id);});assignCodes();renderCurriculum();toast('Removed '+tr.length+' duplicate(s)','s');}
 function setTier(id){var c=courses.find(function(x){return x.id===id;});if(!c)return;var p=getProg(),tc=prompt('Set tier for "'+c.name+'":\n2=School Shared (T2)\n3=Dept Shared (T3)\n4=Programme-Specific (T4)\n\nEnter 2, 3 or 4:',String(c.tier||4));var t=parseInt(tc);if(t<2||t>4||isNaN(t))return;c.tier=t;if(t===2)c.ownerSchool=p.school;if(t===3){c.ownerSchool=p.school;c.ownerDept=p.dept;}renderCurriculum();toast('Tier set to '+t,'s');}
 function insertUCC(key){var def=UCC[key];if(!def){toast('UCC not found','e');return;}if(courses.some(function(c){return getUK(c)===key;})){toast('Already in programme','i');return;}courses.push({id:nextId++,year:def.year||1,sem:def.sem||'1',prefix:def.prefix,name:def.name,type:def.type||'lec',DH:def.DH||0,SH:def.SH||0,AH:def.AH||0,OH:def.OH||0,elective:false});courses.sort(function(a,b){if(a.year!==b.year)return a.year-b.year;var o={'1':1,'2':2,'R':3};return(o[a.sem]||9)-(o[b.sem]||9);});assignCodes();renderUCCList();toast(def.name+' added!','s');}
+
 
 /* CURRICULUM REGISTRY CHECK (FIX #2) */
 async function checkAllCourseRegistry(){
@@ -938,6 +1068,7 @@ async function extractAndFill(){
     SECTIONS.forEach(function(s){SC[s.key]={text:'',done:false};});CD={};
     stat.innerHTML='<span style="color:var(--gn);font-weight:700">\u2705 Complete! '+courses.length+' courses loaded from "'+esc(meta.name||'your document')+'".</span>';
     renderUCCList();toast(courses.length+' courses extracted and loaded!','s');switchTab('curriculum');
+    setTimeout(function(){syncWithRegistry(true);},800);
   }catch(e){
     if(stat)stat.innerHTML='<span style="color:var(--rd)">\u274c Error: '+esc(e.message)+'</span>';
     if(er){er.textContent='\u274c '+e.message+' \u2014 Tip: Make sure the backend is running and your document contains a curriculum/course list.';er.style.display='flex';}

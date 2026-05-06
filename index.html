@@ -131,7 +131,6 @@ body{font-family:var(--ff);background:var(--g50);color:var(--g700);font-size:14p
     <div class="tab" onclick="switchTab('generate')" id="tab-generate">&#128221; Generator</div>
     <div class="tab" onclick="switchTab('preview')" id="tab-preview">&#128196; Full Preview</div>
     <div class="tab" onclick="switchTab('programmes')" id="tab-programmes">&#128193; My Programmes</div>
-    <div class="tab" onclick="switchTab('audit')" id="tab-audit">&#127963; Registry Audit</div>
   </div>
 </div>
 
@@ -296,20 +295,6 @@ body{font-family:var(--ff);background:var(--g50);color:var(--g700);font-size:14p
   </div></div>
 </div>
 
-<!-- REGISTRY AUDIT -->
-<div class="pane" id="pane-audit">
-  <div class="card"><div class="card-hd tl">&#127963; KIU Institutional Course Registry Audit</div><div class="card-body">
-    <p style="font-size:12px;color:var(--g700);margin:0 0 12px">Identifies courses with inconsistent codes, NH values, or tier classifications across programmes in the KIU course registry.</p>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn bt" onclick="runAudit()">&#128269; Run Full Audit</button>
-      <button class="btn bg sm" onclick="runAudit('cross')">&#9888; Cross-School Only</button>
-      <button class="btn bn sm" onclick="exportAuditReport()">&#128229; Export Report (.txt)</button>
-      <button class="btn br sm" onclick="clearRegistryData()" style="margin-left:8px">&#128465; Clear All Registry Data</button>
-      <span id="audit-stat" style="font-size:11px;color:var(--g500);margin-left:8px"></span>
-    </div>
-  </div></div>
-  <div id="audit-res"><div style="text-align:center;padding:50px;color:var(--g300)"><div style="font-size:40px;margin-bottom:10px">&#128269;</div><div style="font-size:14px">Click <strong>Run Full Audit</strong> to scan the KIU course registry.</div></div></div>
-</div>
 
 </div><!-- /main -->
 <div id="toaster"></div>
@@ -837,12 +822,7 @@ function clearRegistryData(){
   /* Clear shared UCC content from localStorage */
   try{localStorage.removeItem('kiu_ucc_content_v1');}catch(e){}
   /* Clear UI */
-  var ar=document.getElementById('audit-res');
-  if(ar)ar.innerHTML='<div style="text-align:center;padding:40px;color:var(--g300)">'
-    +'<div style="font-size:36px;margin-bottom:8px">&#128465;</div>'
-    +'<div style="font-size:14px">Registry data cleared. Click <strong>Run Full Audit</strong> to re-scan.</div></div>';
   var rr=document.getElementById('reg-results');if(rr)rr.style.display='none';
-  var st=document.getElementById('audit-stat');if(st)st.textContent='';
   toast('Registry data cleared. Shared UCC content cleared. Your programmes are safe.','s');
 }
 
@@ -865,6 +845,8 @@ async function applySync(){
     if(reg.AH>0)course.AH=reg.AH;
     if(reg.OH>0)course.OH=reg.OH;
     if(reg.tier)course.tier=reg.tier;
+    /* Lock the canonical registry code so assignCodes() never overwrites it */
+    if(reg.code&&reg.code.trim())course.lockedCode=reg.code.trim();
     if(choice.moveTo){course.year=parseInt(choice.moveTo.year)||course.year;course.sem=String(choice.moveTo.sem||'1');moved++;}
     applied++;
   });
@@ -917,6 +899,14 @@ function assignCodes(){
   courses.forEach(function(c){
     var sn=c.sem==='R'?'3':c.sem,uk=getUK(c);
     if(uk){var ui=UCC_ORD.indexOf(uk),sr=String(ui>=0?ui+1:99).padStart(2,'0');c.code=c.prefix+' '+lv+c.year+sn+sr;var uD=UCC[uk];if(uD){c.DH=uD.DH;c.SH=uD.SH;c.AH=uD.AH;c.OH=uD.OH;c.type=uD.type||c.type;c.prefix=uD.prefix||c.prefix;c.locked=true;}}
+    else if(c.lockedCode){
+      /* Registry-matched course — preserve canonical code exactly */
+      c.code=c.lockedCode;
+      /* Still advance serial counter so other courses stay consistent */
+      var k2l=c.prefix+'_'+c.year+'_'+sn;
+      if(!ss[k2l])ss[k2l]=courses.filter(function(x){return isUCC(x)&&x.year===c.year&&x.sem===c.sem;}).length+1;
+      ss[k2l]++;
+    }
     else{var k2=c.prefix+'_'+c.year+'_'+sn;var uccN=courses.filter(function(x){return isUCC(x)&&x.year===c.year&&x.sem===c.sem;}).length;if(!ss[k2])ss[k2]=uccN+1;c.code=c.prefix+' '+lv+c.year+sn+String(ss[k2]++).padStart(2,'0');}
   });
 }
@@ -949,7 +939,7 @@ function balanceSem(yr,sm){
 }
 function showBalanceReport(){var ln=['SEMESTER NH REPORT (Target: 600 NH / 60 Credits)',''];groupBySem().forEach(function(g){if(g.sem==='R')return;var nh=semNH(g.courses);ln.push((Math.abs(nh-600)<=2?'OK  ':'!!  ')+getSL(g.year,g.sem)+': '+nh+' NH / '+semCr(g.courses)+' Cr');});alert(ln.join('\n'));}
 
-function updateCourse(id,field,value){var c=courses.find(function(x){return x.id===id;});if(!c)return;if(c.locked&&['DH','SH','AH','OH'].indexOf(field)>=0){toast('\ud83d\udd12 UCC — NH values are fixed institution-wide','e');return;}if(['DH','SH','AH','OH'].indexOf(field)>=0)value=parseInt(value)||0;if(field==='elective')value=!!value;c[field]=value;if(field!=='name'){assignCodes();renderCurriculum();}}
+function updateCourse(id,field,value){var c=courses.find(function(x){return x.id===id;});if(!c)return;if(c.locked&&['DH','SH','AH','OH'].indexOf(field)>=0){toast('\ud83d\udd12 UCC — NH values are fixed institution-wide','e');return;}if(['DH','SH','AH','OH'].indexOf(field)>=0)value=parseInt(value)||0;if(field==='elective')value=!!value;/* Release locked code if user manually changes position/prefix */if(['prefix','year','sem'].indexOf(field)>=0&&c.lockedCode){c.lockedCode=null;toast('Registry code lock released — code will auto-generate','i');}c[field]=value;if(field!=='name'){assignCodes();renderCurriculum();}}
 function deleteCourse(id){if(!confirm('Delete this course?'))return;courses=courses.filter(function(c){return c.id!==id;});assignCodes();renderCurriculum();}
 function refreshCodes(){assignCodes();renderCurriculum();}
 function addCourse(){courses.push({id:nextId++,year:1,sem:'1',prefix:getProg().prefix||'PRG',name:'New Course',type:'lec',DH:45,SH:35,AH:10,OH:10,elective:false});assignCodes();renderCurriculum();}
@@ -1053,7 +1043,8 @@ function renderCurriculum(){
     g.courses.forEach(function(c){
       var nh=getNH(c),cr=getCr(c),uk=getUK(c),isW=uk==='WRC';
       var rc=isW?'wrc':uk?'ucc':c.elective?'el':'';
-      html+='<tr class="'+rc+'"><td><span class="cd">'+(c.code||'')+'</span></td>';
+      html+='<tr class="'+rc+'"><td><span class="cd" style="'+(c.lockedCode?'background:#065f46;color:#fff':'')+'" title="'+(c.lockedCode?'Registry-locked code':'Auto-generated')+'">'
+        +(c.lockedCode?'\ud83d\udd12 ':'')+esc(c.code||'')+'</span></td>';
       html+='<td>'+(uk?'<span style="font-size:12px;font-weight:600;color:var(--nv)">'+(isW?'\ud83d\udccb ':isUCC(c)?'\ud83d\udd12 ':'')+esc(c.name)+'</span>':'<input type="text" value="'+esc(c.name)+'" onchange="updateCourse('+c.id+',\'name\',this.value)" style="min-width:180px">')+'</td>';
       html+='<td class="c">'+(uk?'<span style="font-size:11px;font-family:var(--fm)">'+c.prefix+'</span>':'<input type="text" value="'+c.prefix+'" onchange="updateCourse('+c.id+',\'prefix\',this.value.toUpperCase())" style="width:50px;text-align:center">')+'</td>';
       html+='<td class="c"><input type="number" value="'+c.DH+'" min="0" onchange="updateCourse('+c.id+',\'DH\',this.value)"></td>';
@@ -1634,66 +1625,6 @@ async function extractAndFill(){
   if(btn){btn.disabled=false;btn.innerHTML='\ud83d\udd0d Extract &amp; Auto-Fill All Fields';}
 }
 
-/* REGISTRY AUDIT FIX (#4) */
-var _auditConflicts=[];
-async function runAudit(filter){
-  var el=document.getElementById('audit-res'),st=document.getElementById('audit-stat');
-  if(!el)return;
-  _auditConflicts=[];
-  el.innerHTML='<div style="text-align:center;padding:30px;font-size:13px;color:var(--g500)"><span class="spin" style="display:inline-block;width:22px;height:22px;border:3px solid var(--tl);border-top-color:transparent;border-radius:50%;animation:_sp .8s linear infinite;vertical-align:middle"></span> Scanning registry...</div>';
-  if(st)st.textContent='Fetching...';
-  try{
-    var url=API+'/api/audit'+(filter?'?filter='+filter:'');
-    var resp=await fetch(url,{signal:AbortSignal.timeout(15000)});
-    if(!resp.ok)throw new Error('Server error '+resp.status);
-    var data=await resp.json();
-    _auditConflicts=(data.conflicts||[]).slice();
-    if(st)st.textContent='Registry: '+(data.registrySize||'?')+' courses | '+(data.total||0)+' conflicts';
-    renderAuditResults(data.registrySize||0);
-  }catch(e){
-    if(st)st.textContent='Error: '+e.message;
-    el.innerHTML='<div class="al ae"><strong>\u274c Audit failed:</strong> '+esc(e.message)+'<br><small>Make sure the Render backend is running. It may take 30-60 seconds to start after idle.</small><br><button class="btn bn sm" onclick="runAudit()" style="margin-top:8px">\u21ba Retry</button></div>';
-  }
-}
-
-function renderAuditResults(regSize){
-  var el=document.getElementById('audit-res');if(!el)return;
-  if(!_auditConflicts.length){
-    el.innerHTML='<div style="text-align:center;padding:50px;color:var(--gn)"><div style="font-size:40px;margin-bottom:10px">\u2705</div><div style="font-size:15px;font-weight:700">Registry is clean!</div><div style="font-size:12px;color:var(--g500);margin-top:6px">Scanned '+regSize+' courses. No conflicts found.</div></div>';return;
-  }
-  var html='<div class="al ai" style="margin-bottom:12px">Found <strong>'+_auditConflicts.length+' conflict(s)</strong> across '+regSize+' registry entries. Review and resolve each below.</div>';
-  _auditConflicts.forEach(function(cf,ci){
-    html+='<div style="border:1.5px solid var(--rd);border-radius:8px;margin-bottom:10px;overflow:hidden">';
-    html+='<div style="background:var(--rdl);padding:8px 14px;display:flex;justify-content:space-between;align-items:center">';
-    html+='<div><strong style="color:var(--rd);font-size:13px">\u26a0 '+esc(cf.name)+'</strong>';
-    if(cf.severity)html+=' <span style="background:var(--rd);color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:6px">'+esc(cf.severity).toUpperCase()+'</span>';
-    html+='</div>';
-    html+='<button class="btn br xs" onclick="ignoreConflict('+ci+')">Ignore \u2715</button>';
-    html+='</div>';
-    html+='<div style="padding:10px 14px;background:#fff">';
-    html+='<div style="font-size:12px;margin-bottom:8px;color:var(--g500)">Found in '+((cf.entries||[]).length)+' programme(s):</div>';
-    (cf.entries||[]).forEach(function(e){var nh=(e.DH||0)+(e.SH||0)+(e.AH||0)+(e.OH||0);html+='<div style="font-size:11.5px;padding:5px 8px;border:1px solid var(--g100);border-radius:4px;margin-bottom:4px;background:var(--g50)"><span style="font-weight:700;color:var(--nv)">'+esc(e.programme||'Unknown')+'</span> <span style="color:var(--g500)">('+esc(e.school||'?')+')</span> &mdash; Code: <code>'+esc(e.code||'N/A')+'</code> &mdash; NH: '+nh+(e.tier?' &mdash; '+tierBadge(e.tier):'')+'</div>';});
-    if(cf.suggestion)html+='<div class="al aw" style="margin:8px 0 0;font-size:11px"><strong>Suggestion:</strong> '+esc(cf.suggestion)+'</div>';
-    html+='</div></div>';
-  });
-  html+='<div style="text-align:right;margin-top:8px"><button class="btn bo sm" onclick="exportAuditReport()">\u21e9 Export Report</button></div>';
-  el.innerHTML=html;
-}
-
-function ignoreConflict(ci){
-  _auditConflicts.splice(ci,1);
-  var st=document.getElementById('audit-stat');if(st)st.textContent=_auditConflicts.length+' conflicts remaining';
-  renderAuditResults(0);
-  toast(_auditConflicts.length+' conflicts remaining','i');
-}
-
-function exportAuditReport(){
-  if(!_auditConflicts.length){toast('No audit data to export. Run audit first.','e');return;}
-  var lines=['KIU COURSE REGISTRY AUDIT REPORT','Generated: '+new Date().toLocaleString(),'Total Conflicts: '+_auditConflicts.length,''];
-  _auditConflicts.forEach(function(cf,i){lines.push((i+1)+'. '+cf.name+(cf.severity?' ['+cf.severity+']':''));(cf.entries||[]).forEach(function(e){var nh=(e.DH||0)+(e.SH||0)+(e.AH||0)+(e.OH||0);lines.push('   '+e.programme+' | Code: '+e.code+' | '+nh+' NH');});if(cf.suggestion)lines.push('   Suggestion: '+cf.suggestion);lines.push('');});
-  var blob=new Blob([lines.join('\n')],{type:'text/plain'}),a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);a.download='KIU_Audit_'+new Date().toISOString().slice(0,10)+'.txt';a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},5000);toast('Audit report exported','s');
-}
 </script>
 
 <script>

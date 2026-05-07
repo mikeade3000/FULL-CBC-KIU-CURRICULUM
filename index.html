@@ -845,8 +845,14 @@ async function applySync(){
     if(reg.AH>0)course.AH=reg.AH;
     if(reg.OH>0)course.OH=reg.OH;
     if(reg.tier)course.tier=reg.tier;
-    /* Lock the canonical registry code so assignCodes() never overwrites it */
-    if(reg.code&&reg.code.trim())course.lockedCode=reg.code.trim();
+    /* Lock the canonical registry code — only if no other course in this programme already uses it */
+    if(reg.code&&reg.code.trim()){
+      var codeAlreadyUsed=courses.some(function(x){
+        return x.id!==course.id&&(x.lockedCode===reg.code.trim()||x.code===reg.code.trim());
+      });
+      if(!codeAlreadyUsed){course.lockedCode=reg.code.trim();}
+      else{toast('⚠ Code '+reg.code+' conflict — will auto-assign new code for "'+course.name.slice(0,25)+'"','e');}
+    }
     if(choice.moveTo){course.year=parseInt(choice.moveTo.year)||course.year;course.sem=String(choice.moveTo.sem||'1');moved++;}
     applied++;
   });
@@ -896,18 +902,48 @@ function switchTab(name){
 
 function assignCodes(){
   var p=getProg(),lv=p.level,ss={};
+  /* Pass 1: assign all codes (UCC fixed, lockedCode preserved, others sequential) */
   courses.forEach(function(c){
     var sn=c.sem==='R'?'3':c.sem,uk=getUK(c);
-    if(uk){var ui=UCC_ORD.indexOf(uk),sr=String(ui>=0?ui+1:99).padStart(2,'0');c.code=c.prefix+' '+lv+c.year+sn+sr;var uD=UCC[uk];if(uD){c.DH=uD.DH;c.SH=uD.SH;c.AH=uD.AH;c.OH=uD.OH;c.type=uD.type||c.type;c.prefix=uD.prefix||c.prefix;c.locked=true;}}
-    else if(c.lockedCode){
-      /* Registry-matched course — preserve canonical code exactly */
+    if(uk){
+      var ui=UCC_ORD.indexOf(uk),sr=String(ui>=0?ui+1:99).padStart(2,'0');
+      c.code=c.prefix+' '+lv+c.year+sn+sr;
+      var uD=UCC[uk];if(uD){c.DH=uD.DH;c.SH=uD.SH;c.AH=uD.AH;c.OH=uD.OH;c.type=uD.type||c.type;c.prefix=uD.prefix||c.prefix;c.locked=true;}
+    }else if(c.lockedCode){
       c.code=c.lockedCode;
-      /* Still advance serial counter so other courses stay consistent */
       var k2l=c.prefix+'_'+c.year+'_'+sn;
       if(!ss[k2l])ss[k2l]=courses.filter(function(x){return isUCC(x)&&x.year===c.year&&x.sem===c.sem;}).length+1;
       ss[k2l]++;
+    }else{
+      var k2=c.prefix+'_'+c.year+'_'+sn;
+      var uccN=courses.filter(function(x){return isUCC(x)&&x.year===c.year&&x.sem===c.sem;}).length;
+      if(!ss[k2])ss[k2]=uccN+1;
+      c.code=c.prefix+' '+lv+c.year+sn+String(ss[k2]++).padStart(2,'0');
     }
-    else{var k2=c.prefix+'_'+c.year+'_'+sn;var uccN=courses.filter(function(x){return isUCC(x)&&x.year===c.year&&x.sem===c.sem;}).length;if(!ss[k2])ss[k2]=uccN+1;c.code=c.prefix+' '+lv+c.year+sn+String(ss[k2]++).padStart(2,'0');}
+  });
+  /* Pass 2: detect and resolve duplicate codes within this programme */
+  var usedCodes={};
+  courses.forEach(function(c){
+    var ck=(c.code||'').trim().toUpperCase();
+    if(!ck)return;
+    if(usedCodes[ck]){
+      /* Duplicate found — release the lockedCode on the LATER course and regenerate */
+      if(c.lockedCode){
+        c.lockedCode=null;
+        toast('⚠ Code conflict: '+c.code+' already used. Re-assigning "'+c.name.slice(0,30)+'"','e');
+      }
+      /* Regenerate with next available serial */
+      var sn=c.sem==='R'?'3':c.sem;
+      var k3=c.prefix+'_'+c.year+'_'+sn;
+      if(!ss[k3])ss[k3]=courses.filter(function(x){return isUCC(x)&&x.year===c.year&&x.sem===c.sem;}).length+1;
+      var newCode;
+      do{newCode=c.prefix+' '+lv+c.year+sn+String(ss[k3]++).padStart(2,'0');}
+      while(usedCodes[newCode.toUpperCase()]);
+      c.code=newCode;
+      usedCodes[newCode.toUpperCase()]=true;
+    }else{
+      usedCodes[ck]=true;
+    }
   });
 }
 
@@ -1231,6 +1267,30 @@ function renderPreview(){
 /* ── UCC SHARED STORAGE (cross-programme fixed course content) ── */
 var UCC_SK='kiu_ucc_content_v1';
 var UCC_SHARED_KEYS=['ICF','ELS','CS','RM']; // the 4 fixed UCCs to share
+
+/* Cross-programme content sharing — finds generated content from any saved programme */
+async function findCrossProgContent(courseName,courseCode){
+  var normName=(courseName||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+  var ps=[];try{ps=getProgs();}catch(e){}
+  for(var i=0;i<ps.length;i++){
+    var prog=ps[i];
+    var savedCD=lsGet('kiu_cd_'+prog.id)||{};
+    /* 1. Exact code match */
+    if(courseCode&&savedCD[courseCode]&&savedCD[courseCode].done&&savedCD[courseCode].text&&savedCD[courseCode].text.length>100){
+      return{text:savedCD[courseCode].text,from:(prog.meta&&prog.meta.abbr)||'saved programme'};
+    }
+    /* 2. Name match across courses in that programme */
+    var progCourses=prog.courses||[];
+    for(var j=0;j<progCourses.length;j++){
+      var pc=progCourses[j];
+      var pcNorm=(pc.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+      if(pcNorm===normName&&pc.code&&savedCD[pc.code]&&savedCD[pc.code].done&&savedCD[pc.code].text&&savedCD[pc.code].text.length>100){
+        return{text:savedCD[pc.code].text,from:(prog.meta&&prog.meta.abbr)||'saved programme'};
+      }
+    }
+  }
+  return null;
+}
 function getUCCShared(){try{return JSON.parse(localStorage.getItem(UCC_SK)||'{}');}catch(e){return{};}}
 function setUCCShared(key,data){try{var s=getUCCShared();s[key]=data;localStorage.setItem(UCC_SK,JSON.stringify(s));}catch(e){}}
 
@@ -1417,13 +1477,15 @@ function renderGenTab(){
     var hasShared=sharedKey&&uccShared[sharedKey]&&uccShared[sharedKey].done;
     var isDone=!!det.done||hasShared;
     var isPulled=!det.done&&hasShared;
-    var statusLabel=isPulled?'\u2193 Pull Shared':isDone?'\u21ba Redo':'Gen';
+    var isCrossPulled=!det.done&&!hasShared&&det.pulledFrom==='cross-programme';
+    var statusLabel=isPulled?'\u2193 Pull UCC':isCrossPulled?'\u21ba Redo':isDone?'\u21ba Redo':'Gen';
     var statusClass=isDone?'bo':'bt';
     ch+='<div class="si2 '+(isDone?'done':'')+'" id="ci-'+c.id+'">'
       +'<div class="sd '+(isDone?'d':'p')+'" id="cd-'+c.id+'">'+(isDone?'\u2713':'\u25cb')+'</div>'
       +'<div class="sn" style="font-size:12px"><span class="cd" style="font-size:10px">'+esc(c.code)+'</span> '+esc(c.name)
       +(isUCC(c)?'<span style="font-size:9px;color:var(--tl);margin-left:4px">[UCC]</span>':'')
-      +(isPulled?'<span style="font-size:9px;color:#065f46;margin-left:4px;font-weight:700">SHARED \u2713</span>':'')
+      +(isPulled?'<span style="font-size:9px;color:#065f46;margin-left:4px;font-weight:700">UCC SHARED \u2713</span>'
+        :det.pulledFrom==='cross-programme'?'<span style="font-size:9px;color:var(--nv2);margin-left:4px;font-weight:700">PULLED \u2193</span>':'')
       +'</div>'
       +'<button class="btn sm '+statusClass+'" onclick="genCourse('+c.id+')" id="cb-'+c.id+'">'+statusLabel+'</button>'
       +'</div>';
@@ -1492,6 +1554,20 @@ async function genCourse(courseId){
       }
     }catch(e){}
   }
+
+  /* 3b. Pull from any saved programme that already has this course generated */
+  try{
+    var crossResult=await findCrossProgContent(c.name,c.code);
+    if(crossResult&&crossResult.text){
+      CD[c.code]={text:crossResult.text,done:true,pulledFrom:'cross-programme'};
+      if(sharedKey)setUCCShared(sharedKey,{text:crossResult.text,done:true});
+      if(btn)btn.innerHTML='\u21ba Redo';
+      if(dot){dot.className='sd d';dot.textContent='\u2713';}if(item)item.className='si2 done';
+      updateProgress();
+      if(!genAll)toast(c.name.slice(0,30)+' \u2014 pulled from '+crossResult.from+' \u2193','s');
+      return;
+    }
+  }catch(e){}
 
   /* 4. Generate fresh using 15-Action prompt */
   if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span>';}
